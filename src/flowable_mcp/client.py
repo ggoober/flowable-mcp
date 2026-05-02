@@ -27,6 +27,13 @@ _logger = logging.getLogger(__name__)
 # Sentinel for missing dict key (distinguishes missing from null, AC-X2).
 _MISSING: object = object()
 
+# Per-page size for auto-pagination — Flowable's documented per-request cap.
+_PAGE_SIZE: int = 100
+# Hard cap on total items returned across all pages (defence against unbounded
+# fetches if Flowable's `total` is unreliable). 10k covers any realistic
+# deployment of process definitions; raise if BPM catalogue grows past that.
+_MAX_ITEMS: int = 10_000
+
 
 class FlowableClient:
     """Async adapter for Flowable REST API.
@@ -49,6 +56,12 @@ class FlowableClient:
     ) -> list[ProcessDefinition]:
         """GET /repository/process-definitions with optional latest/key filters.
 
+        Auto-paginates over Flowable's ``start``/``size`` query params and merges
+        every page until ``total`` items have been collected (or ``_MAX_ITEMS``
+        is hit as a safety cap). Without this loop, Flowable's default page size
+        (typically 10) would silently truncate the result for any non-trivial
+        catalogue.
+
         Raises:
             FlowableAuthError: 401/403 — credentials rejected; no retry (AC-Λ3).
             FlowableNotFoundError: 404 — endpoint not found.
@@ -56,10 +69,40 @@ class FlowableClient:
             FlowableConnectionError: ConnectError/Timeout after transport retries.
             FlowableProtocolError: Malformed response structure (AC-Λ6).
         """
-        params: dict[str, str] = {"latest": str(latest).lower()}
+        base_params: dict[str, str] = {"latest": str(latest).lower()}
         if key:  # key="" → omit, same as None (AC-X7)
-            params["key"] = key
+            base_params["key"] = key
 
+        items: list[dict[object, object]] = []
+        start = 0
+        while True:
+            page_params = {
+                **base_params,
+                "start": str(start),
+                "size": str(_PAGE_SIZE),
+            }
+            data, total = await self._fetch_definitions_page(page_params)
+            items.extend(data)
+
+            if not data:
+                break
+            if len(items) >= total:
+                break
+            if len(items) >= _MAX_ITEMS:
+                _logger.warning(
+                    "flowable list_process_definitions hit _MAX_ITEMS cap; "
+                    "result may be truncated",
+                    extra={"max_items": _MAX_ITEMS, "total": total},
+                )
+                break
+            start = len(items)
+
+        return [ProcessDefinition.model_validate(item) for item in items]
+
+    async def _fetch_definitions_page(
+        self, params: dict[str, str]
+    ) -> tuple[list[dict[object, object]], int]:
+        """Fetch a single page of process definitions and return (data, total)."""
         t0 = time.perf_counter()
         try:
             resp = await self._http.get(
@@ -115,7 +158,16 @@ class FlowableClient:
                 f"expected list at .data, got {type(data).__name__}"
             )
 
-        return [ProcessDefinition.model_validate(item) for item in data]
+        total_raw = payload.get("total")
+        if isinstance(total_raw, int):
+            total = total_raw
+        else:
+            # Defensive fallback: if Flowable omits/garbles `total`, treat the
+            # current page as the whole result so the caller gets *something*
+            # rather than an infinite loop.
+            total = len(data)
+
+        return data, total
 
     async def aclose(self) -> None:
         """Close the underlying AsyncClient. Idempotent (Invariant I5)."""

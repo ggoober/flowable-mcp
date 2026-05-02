@@ -1,21 +1,41 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: flowable
+      POSTGRES_USER: flowable
+      POSTGRES_PASSWORD: flowable
+    volumes:
+      - flowable-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flowable -d flowable"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
   flowable-rest:
     image: flowable/flowable-rest:8.0.0
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "8080:8080"
     environment:
-      # In-memory H2 database — sufficient for CI integration tests.
-      SPRING_DATASOURCE_URL: jdbc:h2:mem:flowable;DB_CLOSE_DELAY=-1
-      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.h2.Driver
-      SPRING_DATASOURCE_USERNAME: sa
-      SPRING_DATASOURCE_PASSWORD: ""
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/flowable
+      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
+      SPRING_DATASOURCE_USERNAME: flowable
+      SPRING_DATASOURCE_PASSWORD: flowable
+      # Default rest-admin/test credentials kept — used by tests.
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "curl -sf -u rest-admin:test http://localhost:8080/flowable-rest/service/management/engine || exit 1",
+          "wget -qO- --header='Authorization: Basic cmVzdC1hZG1pbjp0ZXN0' http://localhost:8080/flowable-rest/service/management/engine >/dev/null 2>&1 || exit 1",
         ]
       interval: 10s
       timeout: 5s
-      retries: 12
-      start_period: 40s
+      retries: 18
+      start_period: 60s
+
+volumes:
+  flowable-pg:
