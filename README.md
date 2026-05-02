@@ -19,6 +19,17 @@ Pre-alpha. Каркас в разработке.
 
 `flowable/flowable-rest:8.0.0` (Docker)
 
+## План разработки
+
+В рамках проекта:
+
+- разработка `flowable-mcp` (MCP-сервер поверх Flowable REST API);
+- запуск Flowable REST через Docker (`flowable/flowable-rest:8.0.0`) для локальной разработки и тестов;
+- покрытие тестами:
+  - **unit** — изоляция логики MCP-tools и адаптеров без сети;
+  - **integration** — взаимодействие с реальным Flowable REST в Docker;
+  - **e2e** — сквозные сценарии через MCP-клиента к Flowable Engine.
+
 ## Лицензия
 
 MIT (TBD)
