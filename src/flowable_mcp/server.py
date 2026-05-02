@@ -1,9 +1,9 @@
 """FastMCP server: transport layer and lifespan.
 
 Responsibilities:
-- configure logging to stderr only (СТ-3, AC-Λ5, shared-standards §8.2)
-- create Settings + AsyncClient + FlowableClient in lifespan
-- register all MCP tools
+- configure logging to stderr only (СТ-3, AC-X2, shared-standards §8.2)
+- create Settings + two AsyncClients + FlowableClient in lifespan (CC-1, AC-N1)
+- register all MCP tools via per-module register() (AC-N3)
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import sys
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
 import httpx
@@ -19,17 +19,33 @@ from fastmcp import FastMCP
 
 from flowable_mcp.client import FlowableClient
 from flowable_mcp.config import Settings
-from flowable_mcp.tools.process import list_process_definitions
+from flowable_mcp.tools import admin, debug, history, process, task
 
 _logger = logging.getLogger(__name__)
+
+EXPECTED_TOOLS: frozenset[str] = frozenset({
+    "list_process_definitions",
+    "start_process_instance",
+    "get_process_instance",
+    "cancel_process_instance",
+    "list_tasks",
+    "claim_task",
+    "complete_task",
+    "delegate_task",
+    "list_deployments",
+    "deploy_bpmn",
+    "list_deadletter_jobs",
+    "retry_deadletter_job",
+    "list_historic_process_instances",
+    "list_event_subscriptions",
+})
 
 
 def setup_logging() -> None:
     """Configure root logger to write to stderr only.
 
-    Raises RuntimeError on startup if any handler writes to stdout — that would
-    corrupt the MCP stdio protocol channel (shared-standards §8.2, AC-Λ5).
     Idempotent: skips handler setup if root logger already has handlers.
+    Raises RuntimeError if any handler writes to stdout — would corrupt MCP stdio (AC-X2).
     """
     root = logging.getLogger()
     if not root.handlers:
@@ -40,7 +56,6 @@ def setup_logging() -> None:
         root.addHandler(handler)
         root.setLevel(logging.INFO)
 
-    # Startup assert: no handler must point at stdout (Invariant I3).
     for handler in root.handlers:
         if isinstance(handler, logging.StreamHandler) and handler.stream is sys.stdout:
             raise RuntimeError(
@@ -52,24 +67,41 @@ def setup_logging() -> None:
 async def lifespan(app: FastMCP) -> AsyncGenerator[dict[str, Any], None]:
     setup_logging()
     settings = Settings()
-    http = httpx.AsyncClient(
-        auth=httpx.BasicAuth(settings.username, settings.password.get_secret_value()),
-        # transport-only retry for ConnectError (AC-Λ2, DD-5).
-        # retries = retry_attempts - 1 so retry_attempts=1 → 0 retries → 1 total attempt.
-        transport=httpx.AsyncHTTPTransport(retries=max(0, settings.retry_attempts - 1)),
-        limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
-        timeout=settings.timeout_s,
-    )
-    flowable = FlowableClient(settings=settings, http=http)
-    _logger.info("flowable-mcp started, base_url=%s", settings.base_url)
-    try:
-        yield {"client": flowable}
-    finally:
-        await flowable.aclose()
+
+    async with AsyncExitStack() as stack:
+        http_retry = await stack.enter_async_context(
+            httpx.AsyncClient(
+                base_url=settings.base_url + "/",
+                auth=httpx.BasicAuth(settings.username, settings.password.get_secret_value()),
+                transport=httpx.AsyncHTTPTransport(retries=max(0, settings.retry_attempts - 1)),
+                limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+                timeout=settings.timeout_s,
+            )
+        )
+        http_no_retry = await stack.enter_async_context(
+            httpx.AsyncClient(
+                base_url=settings.base_url + "/",
+                auth=httpx.BasicAuth(settings.username, settings.password.get_secret_value()),
+                limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+                timeout=settings.timeout_s,
+            )
+        )
+        client = FlowableClient(http_retry, http_no_retry)
+        stack.push_async_callback(client.aclose)  # HC-5: ensure _closed=True on teardown
+
+        if not await mcp._list_tools():
+            for mod in (process, task, history, debug, admin):
+                mod.register(mcp, client)
+
+        actual_tools = frozenset(t.name for t in await mcp._list_tools())
+        assert actual_tools == EXPECTED_TOOLS, (
+            f"Tool set mismatch — extra: {actual_tools - EXPECTED_TOOLS}, "
+            f"missing: {EXPECTED_TOOLS - actual_tools}"
+        )
+
+        _logger.info("flowable-mcp started, base_url=%s", settings.base_url)
+        yield {"client": client}
         _logger.info("flowable-mcp shutdown complete")
 
 
 mcp = FastMCP("flowable-mcp", lifespan=lifespan)
-
-# DD-1 variant B: tool functions defined in tools/, registered here.
-mcp.tool()(list_process_definitions)

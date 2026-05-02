@@ -259,20 +259,15 @@ async def test_client_when_flowable_stopped_then_raises_connection_error(
     integration_settings,
 ) -> None:
     """TC-94: Client pointing at a closed port raises FlowableConnectionError."""
-
-    class _BadSettings:
-        """Minimal duck-typed settings pointing at an unreachable port."""
-
-        base_url: str = "http://localhost:19999"
-
     async with httpx.AsyncClient(
+        base_url="http://localhost:19999/",
         auth=httpx.BasicAuth(
             integration_settings.username,
             integration_settings.password.get_secret_value(),
         ),
         timeout=2.0,
     ) as http:
-        client = FlowableClient(settings=_BadSettings(), http=http)  # type: ignore[arg-type]
+        client = FlowableClient(http_retry=http, http_no_retry=http)
         with pytest.raises(FlowableConnectionError) as exc_info:
             await client.list_process_definitions()
 
@@ -295,10 +290,11 @@ async def test_client_when_wrong_credentials_then_raises_auth_error(
 ) -> None:
     """TC-95: Invalid Basic Auth credentials cause FlowableAuthError (401/403)."""
     async with httpx.AsyncClient(
+        base_url=integration_settings.base_url + "/",
         auth=httpx.BasicAuth("wrong-user", "wrong-password"),
         timeout=10.0,
     ) as http:
-        client = FlowableClient(settings=integration_settings, http=http)
+        client = FlowableClient(http_retry=http, http_no_retry=http)
         with pytest.raises(FlowableAuthError):
             await client.list_process_definitions()
 

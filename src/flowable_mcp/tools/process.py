@@ -1,33 +1,67 @@
-"""Process definition tools for Flowable MCP.
+"""Process definition and instance tools.
 
-Application layer — may import from fastmcp (Context) but not from httpx (shared-standards §1).
-Tool functions are registered by server.py via mcp.tool() decorator pattern (DD-1 variant B).
+Application layer: imports fastmcp (Context) but NOT httpx (shared-standards §1).
+register(mcp, client) is called once from server.py lifespan (AC-N3).
 """
 
 from __future__ import annotations
 
-from fastmcp import Context
+from typing import Any
+
+from fastmcp import Context, FastMCP
 
 from flowable_mcp.client import FlowableClient
-from flowable_mcp.models import ProcessDefinition
+from flowable_mcp.models import ProcessDefinition, ProcessInstance
 
 
-async def list_process_definitions(
-    latest: bool = True,
-    key: str | None = None,
-    ctx: Context | None = None,
-) -> list[ProcessDefinition]:
-    """List process definitions from Flowable REST.
+def register(mcp: FastMCP, client: FlowableClient) -> None:
+    """Register all process tools onto mcp, closing over client (DI via closure)."""
 
-    Args:
-        latest: Return only the latest version of each definition (default True).
-        key: Filter by processDefinitionKey (optional).
+    @mcp.tool()
+    async def list_process_definitions(
+        latest: bool = True,
+        key: str | None = None,
+        ctx: Context | None = None,
+    ) -> list[ProcessDefinition]:
+        """List process definitions from Flowable."""
+        return await client.list_process_definitions(latest=latest, key=key)
 
-    Raises:
-        FlowableConnectionError: Flowable unreachable or timeout.
-        FlowableAuthError: Basic auth rejected (401/403).
-        FlowableServerError: 5xx from Flowable.
-        FlowableProtocolError: Malformed response structure.
-    """
-    client: FlowableClient = ctx.request_context.lifespan_context["client"]  # type: ignore[union-attr]
-    return await client.list_process_definitions(latest=latest, key=key)
+    @mcp.tool()
+    async def start_process_instance(
+        process_definition_key: str | None = None,
+        process_definition_id: str | None = None,
+        variables: dict[str, Any] | None = None,
+        business_key: str | None = None,
+        tenant_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> ProcessInstance:
+        """Start a new process instance by definition key OR definition ID (XOR, I1)."""
+        has_key = bool(process_definition_key)
+        has_id = bool(process_definition_id)
+        if has_key == has_id:
+            raise ValueError(
+                "Exactly one of process_definition_key or process_definition_id must be provided"
+            )
+        return await client.start_process_instance(
+            process_definition_key=process_definition_key,
+            process_definition_id=process_definition_id,
+            variables=variables,
+            business_key=business_key,
+            tenant_id=tenant_id,
+        )
+
+    @mcp.tool()
+    async def get_process_instance(
+        instance_id: str,
+        ctx: Context | None = None,
+    ) -> ProcessInstance:
+        """Get a single runtime process instance by ID."""
+        return await client.get_process_instance(instance_id)
+
+    @mcp.tool()
+    async def cancel_process_instance(
+        instance_id: str,
+        ctx: Context | None = None,
+    ) -> None:
+        """Cancel (delete) an active process instance."""
+        await client.cancel_process_instance(instance_id)

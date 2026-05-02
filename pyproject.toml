@@ -51,7 +51,9 @@ asyncio_default_test_loop_scope = "session"
 timeout = 30
 addopts = ["-m", "not integration and not e2e"]
 markers = [
+    "unit: pure unit test (no network, no Docker)",
     "integration: requires live flowable-rest:8.0.0 Docker container",
     "e2e: full MCP-client → server → Flowable end-to-end",
+    "slow: known slow test (>5 s)",
 ]
 testpaths = ["tests"]

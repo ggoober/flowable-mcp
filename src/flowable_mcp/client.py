@@ -1,7 +1,9 @@
 """Flowable REST adapter.
 
 Async-only outbound HTTP via httpx.AsyncClient (СТ-5).
-Single client instance per lifespan — injected via DI, never module-level (Invariant I5).
+Two injected AsyncClient instances: http_retry (GET/idempotent) and
+http_no_retry (POST/DELETE, retries=0) — structural guarantee against
+duplicate-create on retry (AC-N1, DD-5, DD-6).
 """
 
 from __future__ import annotations
@@ -9,108 +11,111 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime
+from typing import Any, TypeVar
 
 import httpx
+from pydantic import BaseModel
 
-from flowable_mcp.config import Settings
 from flowable_mcp.errors import (
     FlowableAuthError,
+    FlowableConflictError,
     FlowableConnectionError,
     FlowableNotFoundError,
     FlowableProtocolError,
     FlowableServerError,
+    FlowableValidationError,
 )
-from flowable_mcp.models import ProcessDefinition
+from flowable_mcp.models import (
+    DeadLetterJob,
+    Deployment,
+    EventSubscription,
+    HistoricProcessInstance,
+    ProcessDefinition,
+    ProcessInstance,
+    Task,
+    VariableList,
+)
 
 _logger = logging.getLogger(__name__)
 
-# Sentinel for missing dict key (distinguishes missing from null, AC-X2).
-_MISSING: object = object()
+T = TypeVar("T", bound=BaseModel)
 
-# Per-page size for auto-pagination — Flowable's documented per-request cap.
+_MISSING: object = object()
 _PAGE_SIZE: int = 100
-# Hard cap on total items returned across all pages (defence against unbounded
-# fetches if Flowable's `total` is unreliable). 10k covers any realistic
-# deployment of process definitions; raise if BPM catalogue grows past that.
 _MAX_ITEMS: int = 10_000
+
+
+def _map_status(exc: httpx.HTTPStatusError) -> Exception:
+    """Map HTTP status → typed FlowableError (never raises; caller uses `raise ... from exc`)."""
+    status = exc.response.status_code
+    if status in (401, 403):
+        return FlowableAuthError(f"Authentication failed ({status})")
+    if status == 400:
+        body = exc.response.text[:500]
+        return FlowableValidationError(f"Validation error ({status}): {body}")
+    if status == 404:
+        return FlowableNotFoundError("Resource not found (404)")
+    if status == 409:
+        body = exc.response.text[:200]
+        return FlowableConflictError(f"Conflict (409): {body}")
+    if status >= 500:
+        body = exc.response.text[:200]
+        return FlowableServerError(f"Server error {status}: {body}")
+    body = exc.response.text[:200]
+    return FlowableServerError(f"Unexpected status {status}: {body}")
 
 
 class FlowableClient:
     """Async adapter for Flowable REST API.
 
     Args:
-        settings: Application settings (base_url, credentials, timeouts).
-        http: Pre-configured AsyncClient injected by lifespan (DD-2 / AC-Λ1).
+        http_retry: AsyncClient for idempotent requests (GET, HEAD); may have transport retries.
+        http_no_retry: AsyncClient for non-idempotent requests (POST, DELETE); retries=0.
     """
 
-    def __init__(self, settings: Settings, http: httpx.AsyncClient) -> None:
-        self._settings = settings
-        self._http = http
-        self._closed: bool = False  # idempotent aclose guard (Invariant I5)
-
-    async def list_process_definitions(
+    def __init__(
         self,
+        http_retry: httpx.AsyncClient,
+        http_no_retry: httpx.AsyncClient,
+    ) -> None:
+        self._retry = http_retry
+        self._no_retry = http_no_retry
+        # Extract base URL so _call can build absolute URLs regardless of whether the
+        # AsyncClient was configured with base_url or not.
+        self._base_url: str = str(http_retry.base_url).rstrip("/")
+        self._closed: bool = False
+
+    # ------------------------------------------------------------------
+    # Internal HTTP primitives
+    # ------------------------------------------------------------------
+
+    async def _call(
+        self,
+        method: str,
+        path: str,
         *,
-        latest: bool = True,
-        key: str | None = None,
-    ) -> list[ProcessDefinition]:
-        """GET /repository/process-definitions with optional latest/key filters.
+        idempotent: bool,
+        response_model: type[T] | None = None,
+        expect_json: bool = True,
+        **kwargs: Any,
+    ) -> Any:
+        """Single entry point for all HTTP calls (AC-N2).
 
-        Auto-paginates over Flowable's ``start``/``size`` query params and merges
-        every page until ``total`` items have been collected (or ``_MAX_ITEMS``
-        is hit as a safety cap). Without this loop, Flowable's default page size
-        (typically 10) would silently truncate the result for any non-trivial
-        catalogue.
-
-        Raises:
-            FlowableAuthError: 401/403 — credentials rejected; no retry (AC-Λ3).
-            FlowableNotFoundError: 404 — endpoint not found.
-            FlowableServerError: 5xx — Flowable internal error.
-            FlowableConnectionError: ConnectError/Timeout after transport retries.
-            FlowableProtocolError: Malformed response structure (AC-Λ6).
+        path must be slash-prefixed, e.g. "/runtime/process-instances".
+        Returns: model instance | raw dict/list | None.
+        - 204 No Content → None.
+        - expect_json=False → None (fire-and-forget actions).
+        - response_model=None + expect_json=True → raw payload dict (list pagination).
+        - response_model provided → model_validate(resp.json()).
         """
-        base_params: dict[str, str] = {"latest": str(latest).lower()}
-        if key:  # key="" → omit, same as None (AC-X7)
-            base_params["key"] = key
-
-        items: list[dict[object, object]] = []
-        start = 0
-        while True:
-            page_params = {
-                **base_params,
-                "start": str(start),
-                "size": str(_PAGE_SIZE),
-            }
-            data, total = await self._fetch_definitions_page(page_params)
-            items.extend(data)
-
-            if not data:
-                break
-            if len(items) >= total:
-                break
-            if len(items) >= _MAX_ITEMS:
-                _logger.warning(
-                    "flowable list_process_definitions hit _MAX_ITEMS cap; "
-                    "result may be truncated",
-                    extra={"max_items": _MAX_ITEMS, "total": total},
-                )
-                break
-            start = len(items)
-
-        return [ProcessDefinition.model_validate(item) for item in items]
-
-    async def _fetch_definitions_page(
-        self, params: dict[str, str]
-    ) -> tuple[list[dict[object, object]], int]:
-        """Fetch a single page of process definitions and return (data, total)."""
+        client = self._retry if idempotent else self._no_retry
+        url = f"{self._base_url}{path}"
         t0 = time.perf_counter()
         try:
-            resp = await self._http.get(
-                f"{self._settings.base_url}/repository/process-definitions",
-                params=params,
-            )
+            resp = await client.request(method, url, **kwargs)
         except asyncio.CancelledError:
-            raise  # propagate — never swallow CancelledError (AC-Λ4, shared-standards §5.2)
+            raise  # I7 / AC-X4: CancelledError before TransportError, never swallowed
         except httpx.TransportError as exc:
             raise FlowableConnectionError(
                 f"Connection failed: {type(exc).__name__}"
@@ -119,37 +124,80 @@ class FlowableClient:
         _logger.info(
             "flowable http",
             extra={
-                "method": "GET",
-                "path": "/repository/process-definitions",
+                "method": method,
+                "path": path,
                 "status": resp.status_code,
                 "latency_ms": round((time.perf_counter() - t0) * 1000, 2),
             },
         )
 
+        if resp.status_code == 204:
+            return None
+
         try:
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            status = exc.response.status_code
-            if status in (401, 403):
-                # Credentials must not appear in the error message (Invariant I7, AC-2).
-                raise FlowableAuthError(
-                    f"Authentication failed ({status})"
-                ) from exc
-            if status == 404:
-                raise FlowableNotFoundError("Endpoint not found") from exc
-            body_snippet = exc.response.text[:200]
-            raise FlowableServerError(f"Server error {status}: {body_snippet}") from exc
+            raise _map_status(exc) from exc
 
-        payload: dict[object, object] = resp.json()
-        if not isinstance(payload, dict):
+        if not expect_json:
+            return None
+
+        payload = resp.json()
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)
+
+    async def _call_multipart(
+        self,
+        path: str,
+        files: dict[str, Any],
+        *,
+        response_model: type[T] | None = None,
+    ) -> T | None:
+        """POST multipart/form-data via http_no_retry (CC-3, retries=0)."""
+        url = f"{self._base_url}{path}"
+        t0 = time.perf_counter()
+        try:
+            resp = await self._no_retry.request("POST", url, files=files)
+        except asyncio.CancelledError:
+            raise
+        except httpx.TransportError as exc:
+            raise FlowableConnectionError(
+                f"Connection failed: {type(exc).__name__}"
+            ) from exc
+
+        _logger.info(
+            "flowable http",
+            extra={
+                "method": "POST",
+                "path": path,
+                "status": resp.status_code,
+                "latency_ms": round((time.perf_counter() - t0) * 1000, 2),
+            },
+        )
+
+        if resp.status_code == 204:
+            return None
+
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise _map_status(exc) from exc
+
+        if response_model is None:
+            return None
+        return response_model.model_validate(resp.json())
+
+    def _parse_list(self, raw: Any, model: type[T]) -> list[T]:
+        """Parse Flowable's standard {data: [...], total: N} envelope into a typed list."""
+        if not isinstance(raw, dict):
             raise FlowableProtocolError(
-                f"expected JSON object at root, got {type(payload).__name__}"
+                f"expected JSON object at root, got {type(raw).__name__}"
             )
-        data = payload.get("data", _MISSING)
-
+        data = raw.get("data", _MISSING)
         if data is _MISSING:
             raise FlowableProtocolError(
-                f"expected 'data' key in response, got keys: {list(payload.keys())}"
+                f"expected 'data' key in response, got keys: {list(raw.keys())}"
             )
         if data is None:
             raise FlowableProtocolError("'data' is null in Flowable response")
@@ -157,20 +205,275 @@ class FlowableClient:
             raise FlowableProtocolError(
                 f"expected list at .data, got {type(data).__name__}"
             )
+        return [model.model_validate(item) for item in data]
 
-        total_raw = payload.get("total")
+    def _parse_total(self, raw: Any) -> int:
+        """Extract total count from Flowable page envelope; fallback to len(data)."""
+        if not isinstance(raw, dict):
+            return 0
+        data = raw.get("data")
+        total_raw = raw.get("total")
         if isinstance(total_raw, int):
-            total = total_raw
-        else:
-            # Defensive fallback: if Flowable omits/garbles `total`, treat the
-            # current page as the whole result so the caller gets *something*
-            # rather than an infinite loop.
-            total = len(data)
+            return total_raw
+        return len(data) if isinstance(data, list) else 0
 
-        return data, total
+    # ------------------------------------------------------------------
+    # Public API — existing (TASK-001)
+    # ------------------------------------------------------------------
+
+    async def list_process_definitions(
+        self,
+        *,
+        latest: bool = True,
+        key: str | None = None,
+    ) -> list[ProcessDefinition]:
+        """GET /repository/process-definitions with auto-pagination."""
+        base_params: dict[str, str] = {"latest": str(latest).lower()}
+        if key:
+            base_params["key"] = key
+
+        items: list[ProcessDefinition] = []
+        start = 0
+        while True:
+            page_params = {**base_params, "start": str(start), "size": str(_PAGE_SIZE)}
+            raw = await self._call(
+                "GET", "/repository/process-definitions", idempotent=True, params=page_params
+            )
+            page = self._parse_list(raw, ProcessDefinition)
+            items.extend(page)
+            total = self._parse_total(raw)
+
+            if not page:
+                break
+            if len(items) >= total:
+                break
+            if len(items) >= _MAX_ITEMS:
+                _logger.warning(
+                    "flowable list_process_definitions hit _MAX_ITEMS cap; result truncated",
+                    extra={"max_items": _MAX_ITEMS, "total": total},
+                )
+                break
+            start = len(items)
+
+        return items
+
+    # ------------------------------------------------------------------
+    # S-1: Process Instance Lifecycle
+    # ------------------------------------------------------------------
+
+    async def start_process_instance(
+        self,
+        *,
+        process_definition_key: str | None = None,
+        process_definition_id: str | None = None,
+        variables: dict[str, Any] | None = None,
+        business_key: str | None = None,
+        tenant_id: str | None = None,
+    ) -> ProcessInstance:
+        body: dict[str, Any] = {}
+        if process_definition_key:
+            body["processDefinitionKey"] = process_definition_key
+        else:
+            body["processDefinitionId"] = process_definition_id
+        if variables is not None:
+            body["variables"] = VariableList.from_python_dict(variables).model_dump()
+        if business_key:
+            body["businessKey"] = business_key
+        if tenant_id:
+            body["tenantId"] = tenant_id
+
+        result = await self._call(
+            "POST",
+            "/runtime/process-instances",
+            idempotent=False,
+            response_model=ProcessInstance,
+            json=body,
+        )
+        return result  # type: ignore[return-value]
+
+    async def get_process_instance(self, instance_id: str) -> ProcessInstance:
+        result = await self._call(
+            "GET",
+            f"/runtime/process-instances/{instance_id}",
+            idempotent=True,
+            response_model=ProcessInstance,
+        )
+        return result  # type: ignore[return-value]
+
+    async def cancel_process_instance(self, instance_id: str) -> None:
+        await self._call(
+            "DELETE",
+            f"/runtime/process-instances/{instance_id}",
+            idempotent=False,
+            expect_json=False,
+        )
+
+    # ------------------------------------------------------------------
+    # S-2: User Task Lifecycle
+    # ------------------------------------------------------------------
+
+    async def list_tasks(
+        self,
+        *,
+        process_instance_id: str | None = None,
+        assignee: str | None = None,
+        candidate_group: str | None = None,
+        max_results: int = 20,
+    ) -> list[Task]:
+        params: dict[str, str] = {"size": str(max_results)}
+        if process_instance_id:
+            params["processInstanceId"] = process_instance_id
+        if assignee:
+            params["assignee"] = assignee
+        if candidate_group:
+            params["candidateGroup"] = candidate_group
+
+        raw = await self._call("GET", "/runtime/tasks", idempotent=True, params=params)
+        return self._parse_list(raw, Task)
+
+    async def claim_task(self, task_id: str, assignee: str) -> None:
+        await self._call(
+            "POST",
+            f"/runtime/tasks/{task_id}",
+            idempotent=False,
+            expect_json=False,
+            json={"action": "claim", "assignee": assignee},
+        )
+
+    async def complete_task(
+        self, task_id: str, variables: dict[str, Any] | None = None
+    ) -> None:
+        body: dict[str, Any] = {"action": "complete"}
+        if variables is not None:
+            body["variables"] = VariableList.from_python_dict(variables).model_dump()
+        await self._call(
+            "POST",
+            f"/runtime/tasks/{task_id}",
+            idempotent=False,
+            expect_json=False,
+            json=body,
+        )
+
+    async def delegate_task(self, task_id: str, assignee: str) -> None:
+        await self._call(
+            "POST",
+            f"/runtime/tasks/{task_id}",
+            idempotent=False,
+            expect_json=False,
+            json={"action": "delegate", "assignee": assignee},
+        )
+
+    # ------------------------------------------------------------------
+    # S-3: Deployment Management
+    # ------------------------------------------------------------------
+
+    async def list_deployments(self, *, name_like: str | None = None) -> list[Deployment]:
+        params: dict[str, str] = {}
+        if name_like:
+            params["nameLike"] = name_like
+
+        raw = await self._call(
+            "GET", "/repository/deployments", idempotent=True, params=params
+        )
+        return self._parse_list(raw, Deployment)
+
+    async def deploy_bpmn(self, name: str, bpmn_bytes: bytes) -> Deployment:
+        files = {"file": (name, bpmn_bytes, "application/xml")}
+        result = await self._call_multipart(
+            "/repository/deployments",
+            files=files,
+            response_model=Deployment,
+        )
+        return result  # type: ignore[return-value]
+
+    # ------------------------------------------------------------------
+    # S-4: DeadLetter Triage
+    # ------------------------------------------------------------------
+
+    async def list_deadletter_jobs(
+        self,
+        *,
+        process_definition_key: str | None = None,
+        max_results: int = 50,
+    ) -> list[DeadLetterJob]:
+        params: dict[str, str] = {"size": str(max_results)}
+        if process_definition_key:
+            params["processDefinitionKey"] = process_definition_key
+
+        raw = await self._call(
+            "GET", "/management/deadletter-jobs", idempotent=True, params=params
+        )
+        return self._parse_list(raw, DeadLetterJob)
+
+    async def retry_deadletter_job(self, job_id: str) -> None:
+        await self._call(
+            "POST",
+            f"/management/deadletter-jobs/{job_id}",
+            idempotent=False,
+            expect_json=False,
+            json={"action": "move"},
+        )
+
+    # ------------------------------------------------------------------
+    # S-5: Historic Process Instance Query
+    # ------------------------------------------------------------------
+
+    async def list_historic_process_instances(
+        self,
+        *,
+        process_definition_key: str | None = None,
+        business_key: str | None = None,
+        started_before: datetime | None = None,
+        started_after: datetime | None = None,
+        finished: bool | None = None,
+        max_results: int = 100,
+    ) -> list[HistoricProcessInstance]:
+        params: dict[str, str] = {"size": str(max_results)}
+        if process_definition_key:
+            params["processDefinitionKey"] = process_definition_key
+        if business_key:
+            params["businessKey"] = business_key
+        if started_before is not None:
+            params["startedBefore"] = started_before.isoformat()
+        if started_after is not None:
+            params["startedAfter"] = started_after.isoformat()
+        if finished is not None:
+            params["finished"] = str(finished).lower()
+
+        raw = await self._call(
+            "GET", "/history/historic-process-instances", idempotent=True, params=params
+        )
+        return self._parse_list(raw, HistoricProcessInstance)
+
+    # ------------------------------------------------------------------
+    # S-6: Event Subscriptions
+    # ------------------------------------------------------------------
+
+    async def list_event_subscriptions(
+        self,
+        *,
+        event_type: str | None = None,
+        process_definition_key: str | None = None,
+    ) -> list[EventSubscription]:
+        params: dict[str, str] = {}
+        if event_type:
+            params["eventType"] = event_type
+        if process_definition_key:
+            params["processDefinitionKey"] = process_definition_key
+
+        raw = await self._call(
+            "GET", "/runtime/event-subscriptions", idempotent=True, params=params
+        )
+        return self._parse_list(raw, EventSubscription)
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
 
     async def aclose(self) -> None:
-        """Close the underlying AsyncClient. Idempotent (Invariant I5)."""
+        """Close underlying AsyncClients. Idempotent."""
         if not self._closed:
             self._closed = True
-            await self._http.aclose()
+            await self._retry.aclose()
+            if self._no_retry is not self._retry:
+                await self._no_retry.aclose()

@@ -41,7 +41,10 @@ def _extract_definitions(result) -> list[dict]:
     data = getattr(result, "data", None)
     if isinstance(data, list):
         # fastmcp may return list[ProcessDefinition] — convert to plain dicts.
-        return [item.model_dump(by_alias=True) if hasattr(item, "model_dump") else item for item in data]
+        return [
+            item.model_dump(by_alias=True) if hasattr(item, "model_dump") else item
+            for item in data
+        ]
 
     content = getattr(result, "content", None) or []
     for block in content:
@@ -307,7 +310,7 @@ async def test_e2e_server_when_stdin_closed_after_call_then_exits_cleanly(
         await srv.close_stdin()
         try:
             await asyncio.wait_for(srv.proc.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             srv.proc.kill()
             raise AssertionError("Server did not exit within 5s after stdin EOF")
 
