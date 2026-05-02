@@ -1,0 +1,21 @@
+services:
+  flowable-rest:
+    image: flowable/flowable-rest:8.0.0
+    ports:
+      - "8080:8080"
+    environment:
+      # In-memory H2 database — sufficient for CI integration tests.
+      SPRING_DATASOURCE_URL: jdbc:h2:mem:flowable;DB_CLOSE_DELAY=-1
+      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.h2.Driver
+      SPRING_DATASOURCE_USERNAME: sa
+      SPRING_DATASOURCE_PASSWORD: ""
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -sf -u rest-admin:test http://localhost:8080/flowable-rest/service/management/engine || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s

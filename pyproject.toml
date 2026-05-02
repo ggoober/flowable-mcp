@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "flowable-mcp"
+version = "0.1.0"
+description = "MCP server for Flowable REST API"
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp>=2.0",
+    "httpx>=0.27",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-timeout>=2.3",
+    "respx>=0.21",
+    "ruff>=0.4",
+    "mypy>=1.10",
+    "hypothesis>=6.100",
+]
+
+[project.scripts]
+flowable-mcp = "flowable_mcp.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/flowable_mcp"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+disallow_untyped_defs = true
+ignore_missing_imports = true
+strict_optional = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+timeout = 30
+addopts = ["-m", "not integration and not e2e"]
+markers = [
+    "integration: requires live flowable-rest:8.0.0 Docker container",
+    "e2e: full MCP-client → server → Flowable end-to-end",
+]
+testpaths = ["tests"]
