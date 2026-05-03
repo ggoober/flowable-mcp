@@ -15,6 +15,7 @@ class Variable(BaseModel):
     name: str
     value: str | int | float | bool | None
     type: str  # "string" | "integer" | "double" | "boolean"
+    scope: str | None = None  # "global" | "local" | None — passthrough from Flowable
 
 
 class VariableList(RootModel[list[Variable]]):

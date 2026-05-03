@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import pytest
 from httpx import BasicAuth
 
 from flowable_mcp.client import FlowableClient
 from flowable_mcp.config import Settings
+
+
+def raise_cancelled(_request: httpx.Request) -> httpx.Response:
+    """respx side_effect callable that raises asyncio.CancelledError (§9.2 / spec §5)."""
+    raise asyncio.CancelledError()
 
 pytestmark = [pytest.mark.unit]
 

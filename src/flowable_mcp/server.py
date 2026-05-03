@@ -38,6 +38,15 @@ EXPECTED_TOOLS: frozenset[str] = frozenset({
     "retry_deadletter_job",
     "list_historic_process_instances",
     "list_event_subscriptions",
+    "list_process_instances",
+    "get_process_variables",
+    "set_process_variable",
+    "list_historic_task_instances",
+    "suspend_process_definition",
+    "activate_process_definition",
+    "suspend_process_instance",
+    "activate_process_instance",
+    "delete_deployment",
 })
 
 

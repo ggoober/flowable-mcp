@@ -48,3 +48,12 @@ def register(mcp: FastMCP, client: FlowableClient) -> None:
                 f"BPMN file exceeds 5 MB limit: {len(bpmn_bytes)} bytes decoded"
             )
         return await client.deploy_bpmn(name=name, bpmn_bytes=bpmn_bytes)
+
+    @mcp.tool()
+    async def delete_deployment(
+        deployment_id: str,
+        cascade: bool = False,
+        ctx: Context | None = None,
+    ) -> None:
+        """Delete a deployment by ID. cascade=True also removes running instances and history."""
+        await client.delete_deployment(deployment_id, cascade=cascade)

@@ -11,8 +11,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import urllib.parse
 from datetime import datetime
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 import httpx
 from pydantic import BaseModel
@@ -31,9 +32,11 @@ from flowable_mcp.models import (
     Deployment,
     EventSubscription,
     HistoricProcessInstance,
+    HistoricTaskInstance,
     ProcessDefinition,
     ProcessInstance,
     Task,
+    Variable,
     VariableList,
 )
 
@@ -465,6 +468,157 @@ class FlowableClient:
             "GET", "/runtime/event-subscriptions", idempotent=True, params=params
         )
         return self._parse_list(raw, EventSubscription)
+
+    # ------------------------------------------------------------------
+    # TASK-003: Monitoring/Debug wave 2
+    # ------------------------------------------------------------------
+
+    async def list_process_instances(
+        self,
+        *,
+        process_definition_key: str | None = None,
+        business_key: str | None = None,
+        suspended: bool | None = None,
+        involved_user: str | None = None,
+        max_results: int = 50,
+    ) -> list[ProcessInstance]:
+        """GET /runtime/process-instances with optional filters (AC-1)."""
+        params: dict[str, str] = {"size": str(max_results)}
+        if process_definition_key:
+            params["processDefinitionKey"] = process_definition_key
+        if business_key:
+            params["businessKey"] = business_key
+        if suspended is not None:
+            params["suspended"] = str(suspended).lower()
+        if involved_user:
+            params["involvedUser"] = involved_user
+
+        raw = await self._call(
+            "GET", "/runtime/process-instances", idempotent=True, params=params
+        )
+        return self._parse_list(raw, ProcessInstance)
+
+    async def get_process_variables(self, instance_id: str) -> list[Variable]:
+        """GET /runtime/process-instances/{id}/variables — raw JSON array (AC-2, §4.1)."""
+        raw = await self._call(
+            "GET",
+            f"/runtime/process-instances/{instance_id}/variables",
+            idempotent=True,
+        )
+        if not isinstance(raw, list):
+            raise FlowableProtocolError(
+                f"expected JSON array for variables, got {type(raw).__name__}"
+            )
+        return [Variable.model_validate(item) for item in raw]
+
+    async def set_process_variable(
+        self,
+        instance_id: str,
+        var_name: str,
+        value: str | int | float | bool | None,
+        var_type: str | None = None,
+    ) -> Variable:
+        """PUT /runtime/process-instances/{id}/variables/{encoded_name} (AC-2, §4.2, §4.3)."""
+        if var_type is None:
+            # bool MUST be checked before int — bool is a subclass of int (§4.3, INV-02)
+            if isinstance(value, bool):
+                var_type = "boolean"
+            elif isinstance(value, int):
+                var_type = "integer"
+            elif isinstance(value, float):
+                var_type = "double"
+            elif isinstance(value, str):
+                var_type = "string"
+            else:
+                var_type = "string"  # None → "string" (DD-A2)
+
+        encoded = urllib.parse.quote(var_name, safe="")
+        body = {"name": var_name, "value": value, "type": var_type}
+        result = await self._call(
+            "PUT",
+            f"/runtime/process-instances/{instance_id}/variables/{encoded}",
+            idempotent=False,
+            response_model=Variable,
+            json=body,
+        )
+        return result  # type: ignore[return-value]
+
+    async def list_historic_task_instances(
+        self,
+        *,
+        process_instance_id: str | None = None,
+        assignee: str | None = None,
+        process_definition_key: str | None = None,
+        finished: bool | None = None,
+        started_after: datetime | None = None,
+        started_before: datetime | None = None,
+        max_results: int = 100,
+    ) -> list[HistoricTaskInstance]:
+        """GET /history/historic-task-instances with filters (AC-3)."""
+        params: dict[str, str] = {"size": str(max_results)}
+        if process_instance_id:
+            params["processInstanceId"] = process_instance_id
+        if assignee:
+            params["assignee"] = assignee
+        if process_definition_key:
+            params["processDefinitionKey"] = process_definition_key
+        if finished is not None:
+            params["finished"] = str(finished).lower()
+        if started_after is not None:
+            params["startedAfter"] = started_after.isoformat()
+        if started_before is not None:
+            params["startedBefore"] = started_before.isoformat()
+
+        raw = await self._call(
+            "GET", "/history/historic-task-instances", idempotent=True, params=params
+        )
+        return self._parse_list(raw, HistoricTaskInstance)
+
+    async def set_process_definition_state(
+        self,
+        definition_id: str,
+        *,
+        action: Literal["suspend", "activate"],
+        include_process_instances: bool = False,
+    ) -> ProcessDefinition:
+        """PUT /repository/process-definitions/{id} — suspend or activate (AC-4, §4.4)."""
+        body = {"action": action, "includeProcessInstances": include_process_instances}
+        result = await self._call(
+            "PUT",
+            f"/repository/process-definitions/{definition_id}",
+            idempotent=False,
+            response_model=ProcessDefinition,
+            json=body,
+        )
+        return result  # type: ignore[return-value]
+
+    async def set_process_instance_state(
+        self,
+        instance_id: str,
+        *,
+        action: Literal["suspend", "activate"],
+    ) -> ProcessInstance:
+        """PUT /runtime/process-instances/{id} — suspend or activate (AC-4, §4.4)."""
+        body = {"action": action}
+        result = await self._call(
+            "PUT",
+            f"/runtime/process-instances/{instance_id}",
+            idempotent=False,
+            response_model=ProcessInstance,
+            json=body,
+        )
+        return result  # type: ignore[return-value]
+
+    async def delete_deployment(self, deployment_id: str, *, cascade: bool = False) -> None:
+        """DELETE /repository/deployments/{id} — 204 No Content (AC-5, §4.4, INV-TASK3-5)."""
+        params = {"cascade": str(cascade).lower()}
+        await self._call(
+            "DELETE",
+            f"/repository/deployments/{deployment_id}",
+            idempotent=False,
+            expect_json=False,
+            params=params,
+        )
 
     # ------------------------------------------------------------------
     # Lifecycle
