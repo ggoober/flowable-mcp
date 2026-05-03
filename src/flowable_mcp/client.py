@@ -11,8 +11,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import urllib.parse
 from datetime import datetime
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 import httpx
 from pydantic import BaseModel
@@ -31,9 +32,11 @@ from flowable_mcp.models import (
     Deployment,
     EventSubscription,
     HistoricProcessInstance,
+    HistoricTaskInstance,
     ProcessDefinition,
     ProcessInstance,
     Task,
+    Variable,
     VariableList,
 )
 
@@ -44,6 +47,21 @@ T = TypeVar("T", bound=BaseModel)
 _MISSING: object = object()
 _PAGE_SIZE: int = 100
 _MAX_ITEMS: int = 10_000
+
+
+def _flowable_iso8601(dt: datetime) -> str:
+    """Format datetime in Flowable-accepted ISO-8601: millisecond precision + 'Z' for UTC.
+
+    Flowable's Java parser rejects microsecond precision and `+00:00` style offsets
+    on some endpoints (e.g. /history/historic-task-instances). Output looks like
+    `2026-05-03T07:16:45.771Z`.
+    """
+    if dt.tzinfo is not None:
+        from datetime import timezone
+
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    millis = dt.microsecond // 1000
+    return dt.strftime("%Y-%m-%dT%H:%M:%S") + f".{millis:03d}Z"
 
 
 def _map_status(exc: httpx.HTTPStatusError) -> Exception:
@@ -434,9 +452,9 @@ class FlowableClient:
         if business_key:
             params["businessKey"] = business_key
         if started_before is not None:
-            params["startedBefore"] = started_before.isoformat()
+            params["startedBefore"] = _flowable_iso8601(started_before)
         if started_after is not None:
-            params["startedAfter"] = started_after.isoformat()
+            params["startedAfter"] = _flowable_iso8601(started_after)
         if finished is not None:
             params["finished"] = str(finished).lower()
 
@@ -465,6 +483,172 @@ class FlowableClient:
             "GET", "/runtime/event-subscriptions", idempotent=True, params=params
         )
         return self._parse_list(raw, EventSubscription)
+
+    # ------------------------------------------------------------------
+    # TASK-003: Monitoring/Debug wave 2
+    # ------------------------------------------------------------------
+
+    async def list_process_instances(
+        self,
+        *,
+        process_definition_key: str | None = None,
+        business_key: str | None = None,
+        suspended: bool | None = None,
+        involved_user: str | None = None,
+        max_results: int = 50,
+    ) -> list[ProcessInstance]:
+        """GET /runtime/process-instances with optional filters (AC-1)."""
+        params: dict[str, str] = {"size": str(max_results)}
+        if process_definition_key:
+            params["processDefinitionKey"] = process_definition_key
+        if business_key:
+            params["businessKey"] = business_key
+        if suspended is not None:
+            params["suspended"] = str(suspended).lower()
+        if involved_user:
+            params["involvedUser"] = involved_user
+
+        raw = await self._call(
+            "GET", "/runtime/process-instances", idempotent=True, params=params
+        )
+        return self._parse_list(raw, ProcessInstance)
+
+    async def get_process_variables(self, instance_id: str) -> list[Variable]:
+        """GET /runtime/process-instances/{id}/variables — raw JSON array (AC-2, §4.1)."""
+        raw = await self._call(
+            "GET",
+            f"/runtime/process-instances/{instance_id}/variables",
+            idempotent=True,
+        )
+        if not isinstance(raw, list):
+            raise FlowableProtocolError(
+                f"expected JSON array for variables, got {type(raw).__name__}"
+            )
+        return [Variable.model_validate(item) for item in raw]
+
+    async def set_process_variable(
+        self,
+        instance_id: str,
+        var_name: str,
+        value: str | int | float | bool | None,
+        var_type: str | None = None,
+    ) -> Variable:
+        """Upsert a single variable on a process instance (AC-2, §4.2, §4.3).
+
+        Uses PUT on the plural /variables endpoint with a single-element array
+        body — Flowable treats that as create-or-update. The single-name PUT
+        (.../variables/{name}) returns 404 if the variable does not yet exist,
+        so it cannot serve as a generic "set".
+        """
+        if var_type is None:
+            # bool MUST be checked before int — bool is a subclass of int (§4.3, INV-02)
+            if isinstance(value, bool):
+                var_type = "boolean"
+            elif isinstance(value, int):
+                var_type = "integer"
+            elif isinstance(value, float):
+                var_type = "double"
+            elif isinstance(value, str):
+                var_type = "string"
+            else:
+                var_type = "string"  # None → "string" (DD-A2)
+
+        body = [{"name": var_name, "value": value, "type": var_type}]
+        raw = await self._call(
+            "PUT",
+            f"/runtime/process-instances/{instance_id}/variables",
+            idempotent=False,
+            json=body,
+        )
+        # Flowable returns the array of upserted variables; pick ours.
+        # When value is None Flowable may omit the `type` field in the response,
+        # so fall back to the type we sent.
+        if isinstance(raw, list) and raw:
+            for item in raw:
+                if isinstance(item, dict) and item.get("name") == var_name:
+                    item.setdefault("type", var_type)
+                    return Variable.model_validate(item)
+            first = dict(raw[0]) if isinstance(raw[0], dict) else {}
+            first.setdefault("type", var_type)
+            return Variable.model_validate(first)
+        return Variable(name=var_name, value=value, type=var_type)
+
+    async def list_historic_task_instances(
+        self,
+        *,
+        process_instance_id: str | None = None,
+        assignee: str | None = None,
+        process_definition_key: str | None = None,
+        finished: bool | None = None,
+        started_after: datetime | None = None,
+        started_before: datetime | None = None,
+        max_results: int = 100,
+    ) -> list[HistoricTaskInstance]:
+        """GET /history/historic-task-instances with filters (AC-3)."""
+        params: dict[str, str] = {"size": str(max_results)}
+        if process_instance_id:
+            params["processInstanceId"] = process_instance_id
+        if assignee:
+            params["taskAssignee"] = assignee
+        if process_definition_key:
+            params["processDefinitionKey"] = process_definition_key
+        if finished is not None:
+            params["finished"] = str(finished).lower()
+        if started_after is not None:
+            params["taskCreatedAfter"] = _flowable_iso8601(started_after)
+        if started_before is not None:
+            params["taskCreatedBefore"] = _flowable_iso8601(started_before)
+
+        raw = await self._call(
+            "GET", "/history/historic-task-instances", idempotent=True, params=params
+        )
+        return self._parse_list(raw, HistoricTaskInstance)
+
+    async def set_process_definition_state(
+        self,
+        definition_id: str,
+        *,
+        action: Literal["suspend", "activate"],
+        include_process_instances: bool = False,
+    ) -> ProcessDefinition:
+        """PUT /repository/process-definitions/{id} — suspend or activate (AC-4, §4.4)."""
+        body = {"action": action, "includeProcessInstances": include_process_instances}
+        result = await self._call(
+            "PUT",
+            f"/repository/process-definitions/{definition_id}",
+            idempotent=False,
+            response_model=ProcessDefinition,
+            json=body,
+        )
+        return result  # type: ignore[return-value]
+
+    async def set_process_instance_state(
+        self,
+        instance_id: str,
+        *,
+        action: Literal["suspend", "activate"],
+    ) -> ProcessInstance:
+        """PUT /runtime/process-instances/{id} — suspend or activate (AC-4, §4.4)."""
+        body = {"action": action}
+        result = await self._call(
+            "PUT",
+            f"/runtime/process-instances/{instance_id}",
+            idempotent=False,
+            response_model=ProcessInstance,
+            json=body,
+        )
+        return result  # type: ignore[return-value]
+
+    async def delete_deployment(self, deployment_id: str, *, cascade: bool = False) -> None:
+        """DELETE /repository/deployments/{id} — 204 No Content (AC-5, §4.4, INV-TASK3-5)."""
+        params = {"cascade": str(cascade).lower()}
+        await self._call(
+            "DELETE",
+            f"/repository/deployments/{deployment_id}",
+            idempotent=False,
+            expect_json=False,
+            params=params,
+        )
 
     # ------------------------------------------------------------------
     # Lifecycle

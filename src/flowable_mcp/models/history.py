@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class HistoricProcessInstance(BaseModel):
@@ -31,3 +31,25 @@ class HistoricProcessInstance(BaseModel):
             if head:
                 object.__setattr__(self, "process_definition_key", head)
         return self
+
+
+class HistoricTaskInstance(BaseModel):
+    """DTO for a Flowable historic task instance."""
+
+    model_config = ConfigDict(frozen=True, populate_by_name=True, extra="ignore")
+
+    id: str
+    name: str | None = None
+    task_definition_key: str | None = Field(default=None, alias="taskDefinitionKey")
+    process_instance_id: str | None = Field(default=None, alias="processInstanceId")
+    process_definition_id: str | None = Field(default=None, alias="processDefinitionId")
+    start_time: datetime | None = Field(default=None, alias="startTime")
+    end_time: datetime | None = Field(default=None, alias="endTime")
+    duration_in_millis: int | None = Field(default=None, alias="durationInMillis")
+    assignee: str | None = Field(default=None)
+    delete_reason: str | None = Field(default=None, alias="deleteReason")
+
+    @field_validator("assignee", mode="before")
+    @classmethod
+    def _empty_to_none(cls, v: object) -> object:
+        return None if v == "" else v
