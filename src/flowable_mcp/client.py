@@ -255,14 +255,22 @@ class FlowableClient:
         items: list[T] = []
         start = 0
         while True:
-            page_params = {**params, "start": str(start), "size": str(page_size)}
+            remaining = max_items - len(items)
+            if remaining <= 0:
+                _logger.warning(
+                    "_paginate hit max_items cap",
+                    extra={"max_items": max_items},
+                )
+                return items[:max_items], True
+            size = min(page_size, remaining)
+            page_params = {**params, "start": str(start), "size": str(size)}
             try:
                 raw = await self._call(method, path, idempotent=True, params=page_params)
             except asyncio.CancelledError:
                 raise  # I-02.2: CancelledError must never be swallowed
             # Any FlowableError propagates here without partial result — I-02.1
             page = self._parse_list(raw, model)
-            items.extend(page)
+            items.extend(page[:remaining])
             total = self._parse_total(raw)
             if not page or len(items) >= total:
                 return items, False
@@ -271,7 +279,7 @@ class FlowableClient:
                     "_paginate hit max_items cap",
                     extra={"max_items": max_items, "total": total},
                 )
-                return items, True
+                return items[:max_items], True
             start = len(items)
 
     # ------------------------------------------------------------------
@@ -717,11 +725,8 @@ class FlowableClient:
             params["activityId"] = activity_id
         if finished is not None:
             params["finished"] = str(finished).lower()
-        if started_after is not None:
-            params["startedAfter"] = _flowable_iso8601(started_after)
-        if started_before is not None:
-            params["startedBefore"] = _flowable_iso8601(started_before)
-
+        # Flowable 8.0.0 silently ignores startedBefore/startedAfter on both
+        # GET and POST /query for historic-activity-instances — filter client-side.
         items, _ = await self._paginate(
             "GET",
             "/history/historic-activity-instances",
@@ -729,6 +734,10 @@ class FlowableClient:
             params=params,
             max_items=max_results,
         )
+        if started_after is not None:
+            items = [r for r in items if r.start_time is not None and r.start_time > started_after]
+        if started_before is not None:
+            items = [r for r in items if r.start_time is not None and r.start_time < started_before]
         return items
 
     async def set_task_due_date(self, task_id: str, due_date: datetime) -> None:

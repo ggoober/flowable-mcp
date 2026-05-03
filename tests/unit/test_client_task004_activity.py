@@ -64,28 +64,46 @@ async def test_client_list_activity_when_finished_true_then_lowercase_in_url(
     assert "finished=True" not in url
 
 
-# TC-U-061: started_after → startedAfter=...ISO... in URL
-async def test_client_list_activity_when_started_after_then_iso_param_in_url(
+# TC-U-061: started_after filter is applied client-side (Flowable 8.0.0 ignores it server-side)
+async def test_client_list_activity_when_started_after_then_filtered_client_side(
     flowable_client: FlowableClient, respx_mock
 ) -> None:
-    dt = datetime.datetime(2026, 1, 1, 0, 0, 0, tzinfo=datetime.UTC)
-    route = respx_mock.get(_URL).mock(return_value=httpx.Response(200, json=_EMPTY_PAGE))
-    await flowable_client.list_historic_activity_instances(started_after=dt)
+    boundary = datetime.datetime(2026, 1, 1, 0, 0, 0, tzinfo=datetime.UTC)
+    page = {
+        "data": [
+            {"id": "old", "activityId": "a1", "activityType": "userTask", "startTime": "2025-12-01T00:00:00.000Z"},
+            {"id": "new", "activityId": "a2", "activityType": "userTask", "startTime": "2026-02-01T00:00:00.000Z"},
+        ],
+        "total": 2,
+        "start": 0,
+        "size": 2,
+    }
+    route = respx_mock.get(_URL).mock(return_value=httpx.Response(200, json=page))
+    result = await flowable_client.list_historic_activity_instances(started_after=boundary)
     url = str(route.calls[0].request.url)
-    assert "startedAfter=" in url
-    assert "2026-01-01" in url
+    assert "startedAfter" not in url  # not sent — Flowable ignores it
+    assert [r.id for r in result] == ["new"]
 
 
-# TC-U-062: started_before → startedBefore=...ISO... in URL
-async def test_client_list_activity_when_started_before_then_iso_param_in_url(
+# TC-U-062: started_before filter is applied client-side
+async def test_client_list_activity_when_started_before_then_filtered_client_side(
     flowable_client: FlowableClient, respx_mock
 ) -> None:
-    dt = datetime.datetime(2026, 6, 30, 23, 59, 59, tzinfo=datetime.UTC)
-    route = respx_mock.get(_URL).mock(return_value=httpx.Response(200, json=_EMPTY_PAGE))
-    await flowable_client.list_historic_activity_instances(started_before=dt)
+    boundary = datetime.datetime(2026, 6, 30, 23, 59, 59, tzinfo=datetime.UTC)
+    page = {
+        "data": [
+            {"id": "old", "activityId": "a1", "activityType": "userTask", "startTime": "2026-01-01T00:00:00.000Z"},
+            {"id": "new", "activityId": "a2", "activityType": "userTask", "startTime": "2026-12-01T00:00:00.000Z"},
+        ],
+        "total": 2,
+        "start": 0,
+        "size": 2,
+    }
+    route = respx_mock.get(_URL).mock(return_value=httpx.Response(200, json=page))
+    result = await flowable_client.list_historic_activity_instances(started_before=boundary)
     url = str(route.calls[0].request.url)
-    assert "startedBefore=" in url
-    assert "2026-06-30" in url
+    assert "startedBefore" not in url
+    assert [r.id for r in result] == ["old"]
 
 
 # TC-U-063: No filters provided → only pagination params in URL
