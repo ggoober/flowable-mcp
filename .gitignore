@@ -3,3 +3,9 @@
 CLAUDE.md
 profile.md
 logs/
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
