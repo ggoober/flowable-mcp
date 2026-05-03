@@ -96,7 +96,12 @@ async def test_client_list_historic_task_instances_when_started_after_then_iso_p
         return_value=httpx.Response(200, json=_EMPTY_RESPONSE)
     )
     await flowable_client.list_historic_task_instances(started_after=dt)
-    assert route.calls[0].request.url.params["startedAfter"] == dt.isoformat()
+    # Flowable historic-task-instances uses `taskCreatedAfter`, not `startedAfter`,
+    # in Flowable-accepted ISO-8601 (millis + 'Z').
+    assert (
+        route.calls[0].request.url.params["taskCreatedAfter"]
+        == "2024-01-01T12:00:00.000Z"
+    )
 
 
 # TC-35: started_before → ISO string in params
@@ -108,7 +113,10 @@ async def test_client_list_historic_task_instances_when_started_before_then_iso_
         return_value=httpx.Response(200, json=_EMPTY_RESPONSE)
     )
     await flowable_client.list_historic_task_instances(started_before=dt)
-    assert route.calls[0].request.url.params["startedBefore"] == dt.isoformat()
+    assert (
+        route.calls[0].request.url.params["taskCreatedBefore"]
+        == "2024-03-31T23:59:59.000Z"
+    )
 
 
 # TC-36: 404 → FlowableNotFoundError
@@ -158,11 +166,11 @@ async def test_client_list_historic_task_instances_when_all_filters_then_all_par
     )
     params = dict(route.calls[0].request.url.params)
     assert params["processInstanceId"] == "pi-999"
-    assert params["assignee"] == "bob"
+    assert params["taskAssignee"] == "bob"
     assert params["processDefinitionKey"] == "order-proc"
     assert params["finished"] == "true"
-    assert params["startedAfter"] == dt_after.isoformat()
-    assert params["startedBefore"] == dt_before.isoformat()
+    assert params["taskCreatedAfter"] == "2024-01-01T00:00:00.000Z"
+    assert params["taskCreatedBefore"] == "2024-12-31T00:00:00.000Z"
     assert params["size"] == "25"
 
 

@@ -1,12 +1,15 @@
 """Unit tests for FlowableClient.get_process_variables / set_process_variable
 (TASK-003, TC-13..TC-27, INV-02, INV-04).
+
+set_process_variable uses PUT on the plural /variables endpoint with a
+single-element JSON-array body (Flowable upsert semantics) — the per-name
+endpoint returns 404 if the variable doesn't yet exist.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import urllib.parse
 
 import httpx
 import pytest
@@ -87,97 +90,95 @@ async def test_client_get_process_variables_when_cancelled_then_propagates_cance
 # ---------------------------------------------------------------------------
 
 
-def _var_url(var_name: str) -> str:
-    encoded = urllib.parse.quote(var_name, safe="")
-    return f"{_VARS_URL}/{encoded}"
-
-
-_STR_VAR = {"name": "x", "value": "hello", "type": "string"}
+def _mock_upsert_response(name: str, value, type_: str) -> httpx.Response:
+    """Flowable's PUT /variables returns an array of upserted entries."""
+    return httpx.Response(200, json=[{"name": name, "value": value, "type": type_}])
 
 
 # TC-18: bool=True → type="boolean" NOT "integer" (INV-02, INV-04: bool before int)
 async def test_client_set_process_variable_when_bool_true_then_type_is_boolean(
     flowable_client: FlowableClient, respx_mock
 ) -> None:
-    route = respx_mock.put(_var_url("flag")).mock(
-        return_value=httpx.Response(200, json={"name": "flag", "value": True, "type": "boolean"})
+    route = respx_mock.put(_VARS_URL).mock(
+        return_value=_mock_upsert_response("flag", True, "boolean")
     )
     await flowable_client.set_process_variable(_INSTANCE_ID, "flag", True)
     body = json.loads(route.calls[0].request.content)
-    assert body["type"] == "boolean"
-    assert body["value"] is True
+    assert isinstance(body, list) and len(body) == 1
+    assert body[0]["type"] == "boolean"
+    assert body[0]["value"] is True
+    assert body[0]["name"] == "flag"
 
 
 # TC-19: int (non-bool) → type="integer"
 async def test_client_set_process_variable_when_int_then_type_is_integer(
     flowable_client: FlowableClient, respx_mock
 ) -> None:
-    route = respx_mock.put(_var_url("count")).mock(
-        return_value=httpx.Response(200, json={"name": "count", "value": 7, "type": "integer"})
+    route = respx_mock.put(_VARS_URL).mock(
+        return_value=_mock_upsert_response("count", 7, "integer")
     )
     await flowable_client.set_process_variable(_INSTANCE_ID, "count", 7)
     body = json.loads(route.calls[0].request.content)
-    assert body["type"] == "integer"
+    assert body[0]["type"] == "integer"
 
 
 # TC-20: float → type="double"
 async def test_client_set_process_variable_when_float_then_type_is_double(
     flowable_client: FlowableClient, respx_mock
 ) -> None:
-    route = respx_mock.put(_var_url("ratio")).mock(
-        return_value=httpx.Response(200, json={"name": "ratio", "value": 3.14, "type": "double"})
+    route = respx_mock.put(_VARS_URL).mock(
+        return_value=_mock_upsert_response("ratio", 3.14, "double")
     )
     await flowable_client.set_process_variable(_INSTANCE_ID, "ratio", 3.14)
     body = json.loads(route.calls[0].request.content)
-    assert body["type"] == "double"
+    assert body[0]["type"] == "double"
 
 
 # TC-21: str → type="string"
 async def test_client_set_process_variable_when_str_then_type_is_string(
     flowable_client: FlowableClient, respx_mock
 ) -> None:
-    route = respx_mock.put(_var_url("label")).mock(
-        return_value=httpx.Response(200, json={"name": "label", "value": "hi", "type": "string"})
+    route = respx_mock.put(_VARS_URL).mock(
+        return_value=_mock_upsert_response("label", "hi", "string")
     )
     await flowable_client.set_process_variable(_INSTANCE_ID, "label", "hi")
     body = json.loads(route.calls[0].request.content)
-    assert body["type"] == "string"
+    assert body[0]["type"] == "string"
 
 
 # TC-22: None → type="string" (DD-A2)
 async def test_client_set_process_variable_when_none_then_type_is_string(
     flowable_client: FlowableClient, respx_mock
 ) -> None:
-    route = respx_mock.put(_var_url("nullable")).mock(
-        return_value=httpx.Response(200, json={"name": "nullable", "value": None, "type": "string"})
+    route = respx_mock.put(_VARS_URL).mock(
+        return_value=_mock_upsert_response("nullable", None, "string")
     )
     await flowable_client.set_process_variable(_INSTANCE_ID, "nullable", None)
     body = json.loads(route.calls[0].request.content)
-    assert body["type"] == "string"
-    assert body["value"] is None
+    assert body[0]["type"] == "string"
+    assert body[0]["value"] is None
 
 
-# TC-23: var_name with special chars → URL-encoded in path (§4.2)
-async def test_client_set_process_variable_when_special_chars_in_name_then_url_encoded(
+# TC-23: var_name with special chars — name carried in body, not URL
+async def test_client_set_process_variable_when_special_chars_in_name_then_in_body(
     flowable_client: FlowableClient, respx_mock
 ) -> None:
     var_name = "order/status"
-    route = respx_mock.put(_var_url(var_name)).mock(
-        return_value=httpx.Response(200, json={"name": var_name, "value": "new", "type": "string"})
+    route = respx_mock.put(_VARS_URL).mock(
+        return_value=_mock_upsert_response(var_name, "new", "string")
     )
     await flowable_client.set_process_variable(_INSTANCE_ID, var_name, "new")
     assert route.called
-    # raw_path preserves percent-encoding; url.path decodes %2F → /
-    actual_raw = route.calls[0].request.url.raw_path.decode()
-    assert "order%2Fstatus" in actual_raw
+    body = json.loads(route.calls[0].request.content)
+    assert body[0]["name"] == var_name
 
 
 # TC-24: 200 response → returns Variable DTO
 async def test_client_set_process_variable_when_200_then_returns_variable(
     flowable_client: FlowableClient, respx_mock
 ) -> None:
-    respx_mock.put(_var_url("x")).mock(
-        return_value=httpx.Response(200, json={"name": "x", "value": "hello", "type": "string"})
+    respx_mock.put(_VARS_URL).mock(
+        return_value=_mock_upsert_response("x", "hello", "string")
     )
     result = await flowable_client.set_process_variable(_INSTANCE_ID, "x", "hello")
     assert isinstance(result, Variable)
@@ -188,7 +189,7 @@ async def test_client_set_process_variable_when_200_then_returns_variable(
 async def test_client_set_process_variable_when_404_then_raises_not_found_error(
     flowable_client: FlowableClient, respx_mock
 ) -> None:
-    respx_mock.put(_var_url("x")).mock(return_value=httpx.Response(404))
+    respx_mock.put(_VARS_URL).mock(return_value=httpx.Response(404))
     with pytest.raises(FlowableNotFoundError):
         await flowable_client.set_process_variable(_INSTANCE_ID, "x", "v")
 
@@ -197,7 +198,7 @@ async def test_client_set_process_variable_when_404_then_raises_not_found_error(
 async def test_client_set_process_variable_when_409_then_raises_conflict_error(
     flowable_client: FlowableClient, respx_mock
 ) -> None:
-    respx_mock.put(_var_url("x")).mock(return_value=httpx.Response(409, text="conflict"))
+    respx_mock.put(_VARS_URL).mock(return_value=httpx.Response(409, text="conflict"))
     with pytest.raises(FlowableConflictError):
         await flowable_client.set_process_variable(_INSTANCE_ID, "x", "v")
 
@@ -206,49 +207,47 @@ async def test_client_set_process_variable_when_409_then_raises_conflict_error(
 async def test_client_set_process_variable_when_explicit_type_then_body_uses_that_type(
     flowable_client: FlowableClient, respx_mock
 ) -> None:
-    route = respx_mock.put(_var_url("num")).mock(
-        return_value=httpx.Response(200, json={"name": "num", "value": "42", "type": "string"})
+    route = respx_mock.put(_VARS_URL).mock(
+        return_value=_mock_upsert_response("num", "42", "string")
     )
     await flowable_client.set_process_variable(_INSTANCE_ID, "num", 42, var_type="string")
     body = json.loads(route.calls[0].request.content)
-    assert body["type"] == "string"
+    assert body[0]["type"] == "string"
 
 
 # INV-04: bool False is NOT classified as integer=0
 async def test_client_set_process_variable_when_bool_false_then_type_is_boolean_not_integer(
     flowable_client: FlowableClient, respx_mock
 ) -> None:
-    route = respx_mock.put(_var_url("enabled")).mock(
-        return_value=httpx.Response(
-            200, json={"name": "enabled", "value": False, "type": "boolean"}
-        )
+    route = respx_mock.put(_VARS_URL).mock(
+        return_value=_mock_upsert_response("enabled", False, "boolean")
     )
     await flowable_client.set_process_variable(_INSTANCE_ID, "enabled", False)
     body = json.loads(route.calls[0].request.content)
-    assert body["type"] == "boolean"
-    assert body["value"] is False
+    assert body[0]["type"] == "boolean"
+    assert body[0]["value"] is False
 
 
 # CancelledError propagates (PUT → _no_retry)
 async def test_client_set_process_variable_when_cancelled_then_propagates_cancelled_error(
     flowable_client: FlowableClient, respx_mock
 ) -> None:
-    respx_mock.put(_var_url("x")).mock(side_effect=raise_cancelled)
+    respx_mock.put(_VARS_URL).mock(side_effect=raise_cancelled)
     with pytest.raises(asyncio.CancelledError):
         await flowable_client.set_process_variable(_INSTANCE_ID, "x", "v")
 
 
-# INV-04: URL-encoding stress — all special var_name chars encoded correctly in path
+# Special-name passthrough — name preserved verbatim in body for arbitrary inputs
 @pytest.mark.parametrize("var_name", ["my var", "%test%", "unicode-α", "with#hash"])
-async def test_client_set_process_variable_url_encoding_stress_inv04(
+async def test_client_set_process_variable_name_passthrough(
     var_name: str,
     flowable_client: FlowableClient,
     respx_mock,
 ) -> None:
-    route = respx_mock.put(_var_url(var_name)).mock(
-        return_value=httpx.Response(200, json={"name": var_name, "value": "v", "type": "string"})
+    route = respx_mock.put(_VARS_URL).mock(
+        return_value=_mock_upsert_response(var_name, "v", "string")
     )
     await flowable_client.set_process_variable(_INSTANCE_ID, var_name, "v")
     assert route.called
-    actual_raw = route.calls[0].request.url.raw_path.decode()
-    assert urllib.parse.quote(var_name, safe="") in actual_raw
+    body = json.loads(route.calls[0].request.content)
+    assert body[0]["name"] == var_name

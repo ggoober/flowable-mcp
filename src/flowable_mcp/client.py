@@ -49,6 +49,21 @@ _PAGE_SIZE: int = 100
 _MAX_ITEMS: int = 10_000
 
 
+def _flowable_iso8601(dt: datetime) -> str:
+    """Format datetime in Flowable-accepted ISO-8601: millisecond precision + 'Z' for UTC.
+
+    Flowable's Java parser rejects microsecond precision and `+00:00` style offsets
+    on some endpoints (e.g. /history/historic-task-instances). Output looks like
+    `2026-05-03T07:16:45.771Z`.
+    """
+    if dt.tzinfo is not None:
+        from datetime import timezone
+
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    millis = dt.microsecond // 1000
+    return dt.strftime("%Y-%m-%dT%H:%M:%S") + f".{millis:03d}Z"
+
+
 def _map_status(exc: httpx.HTTPStatusError) -> Exception:
     """Map HTTP status → typed FlowableError (never raises; caller uses `raise ... from exc`)."""
     status = exc.response.status_code
@@ -437,9 +452,9 @@ class FlowableClient:
         if business_key:
             params["businessKey"] = business_key
         if started_before is not None:
-            params["startedBefore"] = started_before.isoformat()
+            params["startedBefore"] = _flowable_iso8601(started_before)
         if started_after is not None:
-            params["startedAfter"] = started_after.isoformat()
+            params["startedAfter"] = _flowable_iso8601(started_after)
         if finished is not None:
             params["finished"] = str(finished).lower()
 
@@ -518,7 +533,13 @@ class FlowableClient:
         value: str | int | float | bool | None,
         var_type: str | None = None,
     ) -> Variable:
-        """PUT /runtime/process-instances/{id}/variables/{encoded_name} (AC-2, §4.2, §4.3)."""
+        """Upsert a single variable on a process instance (AC-2, §4.2, §4.3).
+
+        Uses PUT on the plural /variables endpoint with a single-element array
+        body — Flowable treats that as create-or-update. The single-name PUT
+        (.../variables/{name}) returns 404 if the variable does not yet exist,
+        so it cannot serve as a generic "set".
+        """
         if var_type is None:
             # bool MUST be checked before int — bool is a subclass of int (§4.3, INV-02)
             if isinstance(value, bool):
@@ -532,16 +553,25 @@ class FlowableClient:
             else:
                 var_type = "string"  # None → "string" (DD-A2)
 
-        encoded = urllib.parse.quote(var_name, safe="")
-        body = {"name": var_name, "value": value, "type": var_type}
-        result = await self._call(
+        body = [{"name": var_name, "value": value, "type": var_type}]
+        raw = await self._call(
             "PUT",
-            f"/runtime/process-instances/{instance_id}/variables/{encoded}",
+            f"/runtime/process-instances/{instance_id}/variables",
             idempotent=False,
-            response_model=Variable,
             json=body,
         )
-        return result  # type: ignore[return-value]
+        # Flowable returns the array of upserted variables; pick ours.
+        # When value is None Flowable may omit the `type` field in the response,
+        # so fall back to the type we sent.
+        if isinstance(raw, list) and raw:
+            for item in raw:
+                if isinstance(item, dict) and item.get("name") == var_name:
+                    item.setdefault("type", var_type)
+                    return Variable.model_validate(item)
+            first = dict(raw[0]) if isinstance(raw[0], dict) else {}
+            first.setdefault("type", var_type)
+            return Variable.model_validate(first)
+        return Variable(name=var_name, value=value, type=var_type)
 
     async def list_historic_task_instances(
         self,
@@ -559,15 +589,15 @@ class FlowableClient:
         if process_instance_id:
             params["processInstanceId"] = process_instance_id
         if assignee:
-            params["assignee"] = assignee
+            params["taskAssignee"] = assignee
         if process_definition_key:
             params["processDefinitionKey"] = process_definition_key
         if finished is not None:
             params["finished"] = str(finished).lower()
         if started_after is not None:
-            params["startedAfter"] = started_after.isoformat()
+            params["taskCreatedAfter"] = _flowable_iso8601(started_after)
         if started_before is not None:
-            params["startedBefore"] = started_before.isoformat()
+            params["taskCreatedBefore"] = _flowable_iso8601(started_before)
 
         raw = await self._call(
             "GET", "/history/historic-task-instances", idempotent=True, params=params
