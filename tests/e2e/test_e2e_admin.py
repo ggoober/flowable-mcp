@@ -11,7 +11,7 @@ import base64
 import pytest
 from fastmcp import Client
 
-pytestmark = [pytest.mark.e2e]
+pytestmark = [pytest.mark.e2e, pytest.mark.asyncio(loop_scope="function")]
 
 _MINIMAL_BPMN = b"""\
 <?xml version="1.0" encoding="UTF-8"?>
@@ -35,7 +35,7 @@ async def test_deploy_bpmn_via_mcp_tool_returns_deployment_dto(
         "deploy_bpmn",
         {"name": "tc100-e2e.bpmn20.xml", "bpmn_base64": bpmn_b64},
     )
-    assert not result.isError, f"deploy_bpmn must succeed, got: {result}"
+    assert not result.is_error, f"deploy_bpmn must succeed, got: {result}"
 
     list_result = await mcp_client.call_tool("list_deployments", {})
-    assert not list_result.isError, f"list_deployments must succeed, got: {list_result}"
+    assert not list_result.is_error, f"list_deployments must succeed, got: {list_result}"

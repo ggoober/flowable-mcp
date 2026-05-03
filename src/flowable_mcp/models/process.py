@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ProcessDefinition(BaseModel):
@@ -27,10 +27,21 @@ class ProcessInstance(BaseModel):
 
     id: str
     process_definition_id: str = Field(alias="processDefinitionId")
-    process_definition_key: str = Field(alias="processDefinitionKey")
+    # Flowable's POST /runtime/process-instances response omits processDefinitionKey
+    # (only processDefinitionId is included). Derive it from the id "key:version:uuid"
+    # when missing so DTO consumers always see a populated key.
+    process_definition_key: str = Field(default="", alias="processDefinitionKey")
     business_key: str | None = Field(default=None, alias="businessKey")
     tenant_id: str | None = Field(default=None, alias="tenantId")
     ended: bool = False
     suspended: bool = False
     start_time: datetime | None = Field(default=None, alias="startTime")
     start_user_id: str | None = Field(default=None, alias="startUserId")
+
+    @model_validator(mode="after")
+    def _fill_definition_key(self) -> "ProcessInstance":
+        if not self.process_definition_key and self.process_definition_id:
+            head, _, _ = self.process_definition_id.partition(":")
+            if head:
+                object.__setattr__(self, "process_definition_key", head)
+        return self

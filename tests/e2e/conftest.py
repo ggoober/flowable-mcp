@@ -38,8 +38,16 @@ FIXTURE_BPMN = (
 FIXTURE_USER_TASK_BPMN = (
     Path(__file__).parent.parent / "integration" / "fixtures" / "user-task-process.bpmn20.xml"
 )
+FIXTURE_FAILING_BPMN = (
+    Path(__file__).parent.parent / "integration" / "fixtures" / "failing-service-task.bpmn20.xml"
+)
+FIXTURE_MESSAGE_EVENT_BPMN = (
+    Path(__file__).parent.parent / "integration" / "fixtures" / "message-event.bpmn20.xml"
+)
 SAMPLE_PROCESS_KEY = "hello-world"
 USER_TASK_PROCESS_KEY = "user-task-process"
+FAILING_PROCESS_KEY = "failing-service-task"
+MESSAGE_EVENT_PROCESS_KEY = "message-event-process"
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +81,44 @@ async def e2e_deployed_process(
     bpmn = FIXTURE_BPMN.read_bytes()
     deploy_url = f"{e2e_settings.base_url}/repository/deployments"
     files = {"file": ("sample.bpmn20.xml", bpmn, "application/xml")}
+    resp = await e2e_http.post(deploy_url, files=files)
+    resp.raise_for_status()
+    deployment_id: str = resp.json()["id"]
+    try:
+        yield deployment_id
+    finally:
+        await e2e_http.delete(
+            f"{e2e_settings.base_url}/repository/deployments/{deployment_id}",
+            params={"cascade": "true"},
+        )
+
+
+@pytest_asyncio.fixture(scope="session")
+async def e2e_deployed_failing_process(
+    e2e_settings: Settings, e2e_http: httpx.AsyncClient
+) -> AsyncGenerator[str, None]:
+    bpmn = FIXTURE_FAILING_BPMN.read_bytes()
+    deploy_url = f"{e2e_settings.base_url}/repository/deployments"
+    files = {"file": ("failing-service-task.bpmn20.xml", bpmn, "application/xml")}
+    resp = await e2e_http.post(deploy_url, files=files)
+    resp.raise_for_status()
+    deployment_id: str = resp.json()["id"]
+    try:
+        yield deployment_id
+    finally:
+        await e2e_http.delete(
+            f"{e2e_settings.base_url}/repository/deployments/{deployment_id}",
+            params={"cascade": "true"},
+        )
+
+
+@pytest_asyncio.fixture(scope="session")
+async def e2e_deployed_message_event_process(
+    e2e_settings: Settings, e2e_http: httpx.AsyncClient
+) -> AsyncGenerator[str, None]:
+    bpmn = FIXTURE_MESSAGE_EVENT_BPMN.read_bytes()
+    deploy_url = f"{e2e_settings.base_url}/repository/deployments"
+    files = {"file": ("message-event.bpmn20.xml", bpmn, "application/xml")}
     resp = await e2e_http.post(deploy_url, files=files)
     resp.raise_for_status()
     deployment_id: str = resp.json()["id"]

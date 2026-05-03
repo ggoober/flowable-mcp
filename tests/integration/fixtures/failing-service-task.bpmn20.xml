@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions
+  xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:flowable="http://flowable.org/bpmn"
+  targetNamespace="http://www.flowable.org/processdef">
+
+  <process id="failing-service-task" name="Failing Service Task" isExecutable="true">
+    <startEvent id="start" name="Start"/>
+    <sequenceFlow id="flow1" sourceRef="start" targetRef="failTask"/>
+    <serviceTask id="failTask" name="Fail Task"
+                 flowable:async="true"
+                 flowable:expression="${nonExistentBean.invokeMissingMethod()}"/>
+    <sequenceFlow id="flow2" sourceRef="failTask" targetRef="end"/>
+    <endEvent id="end" name="End"/>
+  </process>
+
+</definitions>

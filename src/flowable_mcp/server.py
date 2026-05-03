@@ -89,9 +89,16 @@ async def lifespan(app: FastMCP) -> AsyncGenerator[dict[str, Any], None]:
         client = FlowableClient(http_retry, http_no_retry)
         stack.push_async_callback(client.aclose)  # HC-5: ensure _closed=True on teardown
 
-        if not await mcp._list_tools():
-            for mod in (process, task, history, debug, admin):
-                mod.register(mcp, client)
+        # Re-register tools on every lifespan: a fresh FlowableClient is captured
+        # by closures inside register(), so previous-session closed clients are not
+        # reused. Clear any registrations from a prior lifespan first.
+        for tool_name in list(EXPECTED_TOOLS):
+            try:
+                mcp.remove_tool(tool_name)
+            except Exception:
+                pass
+        for mod in (process, task, history, debug, admin):
+            mod.register(mcp, client)
 
         actual_tools = frozenset(t.name for t in await mcp._list_tools())
         assert actual_tools == EXPECTED_TOOLS, (

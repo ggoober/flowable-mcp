@@ -97,7 +97,7 @@ async def test_e2e_start_process_instance_when_deployed_then_returns_process_ins
 
     # cleanup: cancel the started instance to leave Flowable in clean state
     pi_id: str = instance["id"]
-    await mcp_client.call_tool("cancel_process_instance", {"process_instance_id": pi_id})
+    await mcp_client.call_tool("cancel_process_instance", {"instance_id": pi_id})
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +120,7 @@ async def test_e2e_cancel_process_instance_when_running_then_returns_none(
     pi_id: str = _extract_single(start_result)["id"]
 
     cancel_result = await mcp_client.call_tool(
-        "cancel_process_instance", {"process_instance_id": pi_id}
+        "cancel_process_instance", {"instance_id": pi_id}
     )
     assert not getattr(cancel_result, "is_error", False), (
         f"cancel_process_instance must not return isError; got {cancel_result!r}"

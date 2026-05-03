@@ -34,8 +34,12 @@ async def _purge_deployments_by_name(
 
 FIXTURE_BPMN = Path(__file__).parent / "fixtures" / "sample.bpmn20.xml"
 FIXTURE_USER_TASK_BPMN = Path(__file__).parent / "fixtures" / "user-task-process.bpmn20.xml"
+FIXTURE_FAILING_BPMN = Path(__file__).parent / "fixtures" / "failing-service-task.bpmn20.xml"
+FIXTURE_MESSAGE_EVENT_BPMN = Path(__file__).parent / "fixtures" / "message-event.bpmn20.xml"
 SAMPLE_PROCESS_KEY = "hello-world"
 USER_TASK_PROCESS_KEY = "user-task-process"
+FAILING_PROCESS_KEY = "failing-service-task"
+MESSAGE_EVENT_PROCESS_KEY = "message-event-process"
 
 
 @pytest.fixture(scope="session")
@@ -115,6 +119,54 @@ async def process_with_user_task(
     deployment_id: str = resp.json()["id"]
 
     yield USER_TASK_PROCESS_KEY
+
+    delete_url = f"{integration_settings.base_url}/repository/deployments/{deployment_id}"
+    await integration_http.delete(delete_url, params={"cascade": "true"})
+
+
+@pytest_asyncio.fixture(scope="session")
+async def failing_process(
+    integration_settings: Settings,
+    integration_http: httpx.AsyncClient,
+) -> str:
+    """Deploy failing-service-task.bpmn20.xml once; yield process key; delete on teardown."""
+    await _purge_deployments_by_name(
+        integration_http, integration_settings.base_url, "failing-service-task.bpmn20.xml"
+    )
+
+    bpmn_content = FIXTURE_FAILING_BPMN.read_bytes()
+    deploy_url = f"{integration_settings.base_url}/repository/deployments"
+
+    files = {"file": ("failing-service-task.bpmn20.xml", bpmn_content, "application/xml")}
+    resp = await integration_http.post(deploy_url, files=files)
+    resp.raise_for_status()
+    deployment_id: str = resp.json()["id"]
+
+    yield FAILING_PROCESS_KEY
+
+    delete_url = f"{integration_settings.base_url}/repository/deployments/{deployment_id}"
+    await integration_http.delete(delete_url, params={"cascade": "true"})
+
+
+@pytest_asyncio.fixture(scope="session")
+async def message_event_process(
+    integration_settings: Settings,
+    integration_http: httpx.AsyncClient,
+) -> str:
+    """Deploy message-event.bpmn20.xml once; yield process key; delete on teardown."""
+    await _purge_deployments_by_name(
+        integration_http, integration_settings.base_url, "message-event.bpmn20.xml"
+    )
+
+    bpmn_content = FIXTURE_MESSAGE_EVENT_BPMN.read_bytes()
+    deploy_url = f"{integration_settings.base_url}/repository/deployments"
+
+    files = {"file": ("message-event.bpmn20.xml", bpmn_content, "application/xml")}
+    resp = await integration_http.post(deploy_url, files=files)
+    resp.raise_for_status()
+    deployment_id: str = resp.json()["id"]
+
+    yield MESSAGE_EVENT_PROCESS_KEY
 
     delete_url = f"{integration_settings.base_url}/repository/deployments/{deployment_id}"
     await integration_http.delete(delete_url, params={"cascade": "true"})
