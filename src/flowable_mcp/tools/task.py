@@ -86,3 +86,29 @@ def register(mcp: FastMCP, client: FlowableClient) -> None:
     ) -> None:
         """Delegate a user task to another assignee."""
         await client.delegate_task(task_id=task_id, assignee=assignee)
+
+    @mcp.tool()
+    async def set_task_due_date(
+        task_id: str,
+        due_date: datetime,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Set (or update) the due date of a task without touching other fields.
+
+        Uses a minimal PUT body {"dueDate": iso} to avoid overwriting assignee,
+        priority, or name via Flowable's full-replace PUT semantics. [AC-5, AC-6]
+
+        Returns {"task_id", "due_date", "warnings"}.
+        Raises ValueError if due_date has no timezone info. [AC-7]
+        """
+        if due_date.tzinfo is None:
+            raise ValueError("due_date must be timezone-aware")
+
+        warnings: list[str] = []
+        if due_date < datetime.now(tz=_dt.UTC):
+            iso = due_date.isoformat()
+            _logger.warning("Setting past due_date %s on task %s", iso, task_id)
+            warnings.append(f"due_date is in the past: {iso}")
+
+        await client.set_task_due_date(task_id=task_id, due_date=due_date)
+        return {"task_id": task_id, "due_date": due_date.isoformat(), "warnings": warnings}

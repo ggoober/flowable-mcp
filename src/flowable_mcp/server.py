@@ -47,6 +47,8 @@ EXPECTED_TOOLS: frozenset[str] = frozenset({
     "suspend_process_instance",
     "activate_process_instance",
     "delete_deployment",
+    "list_historic_activity_instances",
+    "set_task_due_date",
 })
 
 

@@ -47,14 +47,15 @@ def register(mcp: FastMCP, client: FlowableClient) -> None:
         """List active event subscriptions with optional type/key filters.
 
         If Flowable does not support server-side processDefinitionKey filter,
-        an in-tool filter is applied when the result set is ≤ 100 items (S-6 constraint).
+        a client-side filter is applied over all pages (pagination handled by client).
         """
         subs = await client.list_event_subscriptions(
             event_type=event_type,
             process_definition_key=process_definition_key,
         )
-        # In-tool fallback for processDefinitionKey when Flowable ignores the query param
-        if process_definition_key is not None and len(subs) <= 100:
+        # Client-side fallback for processDefinitionKey when Flowable ignores the query param.
+        # Applied unconditionally — client now fetches all pages via _paginate.
+        if process_definition_key is not None:
             subs = [
                 s for s in subs
                 if s.process_definition_id is not None
