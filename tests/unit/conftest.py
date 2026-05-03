@@ -7,6 +7,14 @@ from httpx import BasicAuth
 from flowable_mcp.client import FlowableClient
 from flowable_mcp.config import Settings
 
+pytestmark = [pytest.mark.unit]
+
+
+def pytest_collection_modifyitems(items: list) -> None:
+    for item in items:
+        if "/tests/unit/" in str(item.fspath).replace("\\", "/"):
+            item.add_marker(pytest.mark.unit)
+
 UNIT_BASE_URL = "http://flowable-test"
 UNIT_USERNAME = "test-admin"
 UNIT_PASSWORD = "test-pass"
@@ -25,10 +33,14 @@ def unit_settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
 
 @pytest.fixture
 async def flowable_client(unit_settings: Settings) -> FlowableClient:
+    # base_url with trailing slash so FlowableClient._base_url resolves correctly.
+    # In unit tests both retry and no-retry slots share the same client instance;
+    # respx intercepts all requests regardless of retry policy.
     http = httpx.AsyncClient(
+        base_url=unit_settings.base_url + "/",
         auth=BasicAuth(unit_settings.username, unit_settings.password.get_secret_value()),
         timeout=unit_settings.timeout_s,
     )
-    client = FlowableClient(settings=unit_settings, http=http)
+    client = FlowableClient(http_retry=http, http_no_retry=http)
     yield client
     await http.aclose()

@@ -155,22 +155,26 @@ def test_setup_logging_when_stderr_handler_present_then_no_runtime_error():
 # TC-79
 # ---------------------------------------------------------------------------
 
-async def test_lifespan_when_exception_in_yield_then_aclose_still_called(monkeypatch):
+async def test_lifespan_when_exception_in_yield_then_http_clients_closed(monkeypatch):
     monkeypatch.setenv("FLOWABLE_PASSWORD", "test")
 
-    aclose_count = 0
+    # httpx.AsyncClient.__aexit__ closes the transport directly (not via aclose()).
+    # Counting __aexit__ calls verifies AsyncExitStack cleans up both clients.
+    close_count = 0
+    original_aexit = httpx.AsyncClient.__aexit__
 
-    async def counting_aclose(self):
-        nonlocal aclose_count
-        aclose_count += 1
-        self._closed = True
+    async def counting_aexit(self: httpx.AsyncClient, *args: object) -> None:
+        nonlocal close_count
+        close_count += 1
+        await original_aexit(self, *args)
 
-    with patch.object(FlowableClient, "aclose", counting_aclose):
+    with patch.object(httpx.AsyncClient, "__aexit__", counting_aexit):
         with pytest.raises(RuntimeError, match="lifespan error"):
             async with lifespan(MagicMock()) as _ctx:
                 raise RuntimeError("lifespan error")
 
-    assert aclose_count == 1
+    # AsyncExitStack closes both http_retry and http_no_retry
+    assert close_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +227,34 @@ async def test_client_list_when_401_then_log_record_has_latency_ms_before_error(
 # ---------------------------------------------------------------------------
 # TC-82
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# TC-97  (M-1 — CC-6: EXPECTED_TOOLS frozenset must match registered tool names)
+# ---------------------------------------------------------------------------
+
+def test_expected_tools_when_all_modules_registered_then_names_match_frozenset():
+    from flowable_mcp.server import EXPECTED_TOOLS
+    from flowable_mcp.tools import admin, debug, history, process, task
+
+    class _ToolCapture:
+        def __init__(self) -> None:
+            self.names: set[str] = set()
+
+        def tool(self, *args: object, **kwargs: object):  # type: ignore[override]
+            def decorator(fn):  # type: ignore[no-untyped-def]
+                self.names.add(fn.__name__)
+                return fn
+
+            return decorator
+
+    mcp_stub = _ToolCapture()
+    client_stub = MagicMock()
+
+    for mod in (process, task, history, debug, admin):
+        mod.register(mcp_stub, client_stub)  # type: ignore[arg-type]
+
+    assert mcp_stub.names == EXPECTED_TOOLS
+
 
 async def test_client_list_when_401_then_log_record_does_not_contain_password(
     flowable_client: FlowableClient,

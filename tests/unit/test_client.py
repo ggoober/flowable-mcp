@@ -179,10 +179,11 @@ async def test_client_list_when_retry_attempts_one_and_connect_error_then_raises
     unit_settings: Settings, respx_mock
 ) -> None:
     http = httpx.AsyncClient(
+        base_url=unit_settings.base_url + "/",
         auth=httpx.BasicAuth(unit_settings.username, unit_settings.password.get_secret_value()),
         timeout=unit_settings.timeout_s,
     )
-    client = FlowableClient(settings=unit_settings, http=http)
+    client = FlowableClient(http_retry=http, http_no_retry=http)
     respx_mock.get(PD_URL).mock(side_effect=httpx.ConnectError("refused"))
     with pytest.raises(FlowableConnectionError):
         await client.list_process_definitions()
@@ -562,10 +563,11 @@ async def test_client_aclose_when_called_twice_then_no_exception(
     unit_settings: Settings,
 ) -> None:
     http = httpx.AsyncClient(
+        base_url=unit_settings.base_url + "/",
         auth=httpx.BasicAuth(unit_settings.username, unit_settings.password.get_secret_value()),
         timeout=unit_settings.timeout_s,
     )
-    client = FlowableClient(settings=unit_settings, http=http)
+    client = FlowableClient(http_retry=http, http_no_retry=http)
     await client.aclose()
     await client.aclose()
 
@@ -577,6 +579,7 @@ async def test_client_aclose_when_called_concurrently_then_no_double_close(
     original_aclose = httpx.AsyncClient.aclose
 
     http = httpx.AsyncClient(
+        base_url=unit_settings.base_url + "/",
         auth=httpx.BasicAuth(unit_settings.username, unit_settings.password.get_secret_value()),
         timeout=unit_settings.timeout_s,
     )
@@ -587,7 +590,7 @@ async def test_client_aclose_when_called_concurrently_then_no_double_close(
         await original_aclose(self)
 
     with unittest.mock.patch.object(httpx.AsyncClient, "aclose", counted_aclose):
-        client = FlowableClient(settings=unit_settings, http=http)
+        client = FlowableClient(http_retry=http, http_no_retry=http)
         await asyncio.gather(client.aclose(), client.aclose())
 
     assert close_count == 1
@@ -598,10 +601,11 @@ async def test_client_when_http_aclose_called_then_closed_flag_true(
     unit_settings: Settings,
 ) -> None:
     http = httpx.AsyncClient(
+        base_url=unit_settings.base_url + "/",
         auth=httpx.BasicAuth(unit_settings.username, unit_settings.password.get_secret_value()),
         timeout=unit_settings.timeout_s,
     )
-    client = FlowableClient(settings=unit_settings, http=http)
+    client = FlowableClient(http_retry=http, http_no_retry=http)
     await client.aclose()
     assert client._closed is True
 
@@ -616,8 +620,8 @@ def test_client_when_instantiated_twice_then_separate_instances(
 ) -> None:
     http1 = httpx.AsyncClient(timeout=1.0)
     http2 = httpx.AsyncClient(timeout=1.0)
-    c1 = FlowableClient(settings=unit_settings, http=http1)
-    c2 = FlowableClient(settings=unit_settings, http=http2)
+    c1 = FlowableClient(http_retry=http1, http_no_retry=http1)
+    c2 = FlowableClient(http_retry=http2, http_no_retry=http2)
     assert c1 is not c2
 
 
@@ -698,10 +702,11 @@ async def test_client_list_when_retry_attempts_2_connect_error_then_2_total_atte
     unit_settings: Settings, respx_mock
 ) -> None:
     http = httpx.AsyncClient(
+        base_url=unit_settings.base_url + "/",
         auth=httpx.BasicAuth(unit_settings.username, unit_settings.password.get_secret_value()),
         timeout=unit_settings.timeout_s,
     )
-    client = FlowableClient(settings=unit_settings, http=http)
+    client = FlowableClient(http_retry=http, http_no_retry=http)
     respx_mock.get(PD_URL).mock(side_effect=httpx.ConnectError("refused"))
     with pytest.raises(FlowableConnectionError) as exc_info:
         await client.list_process_definitions()
@@ -713,10 +718,11 @@ async def test_client_list_when_retry_attempts_2_timeout_then_2_total_attempts(
     unit_settings: Settings, respx_mock
 ) -> None:
     http = httpx.AsyncClient(
+        base_url=unit_settings.base_url + "/",
         auth=httpx.BasicAuth(unit_settings.username, unit_settings.password.get_secret_value()),
         timeout=unit_settings.timeout_s,
     )
-    client = FlowableClient(settings=unit_settings, http=http)
+    client = FlowableClient(http_retry=http, http_no_retry=http)
     respx_mock.get(PD_URL).mock(side_effect=httpx.TimeoutException("timeout"))
     with pytest.raises(FlowableConnectionError) as exc_info:
         await client.list_process_definitions()

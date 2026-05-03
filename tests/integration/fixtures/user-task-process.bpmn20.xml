@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions
+  xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:flowable="http://flowable.org/bpmn"
+  targetNamespace="http://www.flowable.org/processdef">
+
+  <process id="user-task-process" name="User Task Process" isExecutable="true">
+    <startEvent id="start" name="Start"/>
+    <sequenceFlow id="flow1" sourceRef="start" targetRef="reviewTask"/>
+    <userTask id="reviewTask" name="Review Task"/>
+    <sequenceFlow id="flow2" sourceRef="reviewTask" targetRef="end"/>
+    <endEvent id="end" name="End"/>
+  </process>
+
+</definitions>

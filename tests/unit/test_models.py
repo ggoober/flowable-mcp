@@ -4,7 +4,14 @@ from hypothesis import assume, given
 from hypothesis import settings as h_settings
 from hypothesis import strategies as st
 
-from flowable_mcp.models import ProcessDefinition
+from flowable_mcp.models import (
+    DeadLetterJob,
+    EventSubscription,
+    HistoricProcessInstance,
+    ProcessDefinition,
+    ProcessInstance,
+    Task,
+)
 
 
 def test_process_definition_when_camel_case_deployment_id_then_alias_maps_correctly() -> None:
@@ -105,3 +112,105 @@ def test_process_definition_property_unknown_fields_ignored(
     assume(field_name not in {"id", "key", "version", "deploymentId", "name", "suspended"})
     payload = {"id": "x", "key": "k", "version": 1, "deploymentId": "d", field_name: value}
     ProcessDefinition.model_validate(payload)
+
+
+# ---------------------------------------------------------------------------
+# TC-012 — ProcessInstance alias roundtrip
+# ---------------------------------------------------------------------------
+
+@given(st.text(min_size=1), st.text(min_size=1), st.text(min_size=1))
+@h_settings(max_examples=50)
+def test_process_instance_property_alias_roundtrip_idempotent(
+    pid: str, pd_id: str, pd_key: str
+) -> None:
+    payload = {
+        "id": pid,
+        "processDefinitionId": pd_id,
+        "processDefinitionKey": pd_key,
+    }
+    pi = ProcessInstance.model_validate(payload)
+    dumped = pi.model_dump(by_alias=True)
+    pi2 = ProcessInstance.model_validate(dumped)
+    assert pi == pi2
+
+
+# ---------------------------------------------------------------------------
+# TC-024 — Task alias roundtrip (includes createTime alias fix)
+# ---------------------------------------------------------------------------
+
+@given(st.text(min_size=1), st.text(min_size=1))
+@h_settings(max_examples=50)
+def test_task_property_alias_roundtrip_idempotent(tid: str, pi_id: str) -> None:
+    payload = {"id": tid, "processInstanceId": pi_id}
+    t = Task.model_validate(payload)
+    dumped = t.model_dump(by_alias=True)
+    t2 = Task.model_validate(dumped)
+    assert t == t2
+
+
+def test_task_when_create_time_alias_then_maps_to_created_field() -> None:
+    payload = {
+        "id": "t-1",
+        "processInstanceId": "pi-1",
+        "createTime": "2024-01-15T10:00:00Z",
+    }
+    t = Task.model_validate(payload)
+    assert t.created is not None
+    assert t.created.year == 2024
+
+
+# ---------------------------------------------------------------------------
+# TC-034 — DeadLetterJob alias roundtrip
+# ---------------------------------------------------------------------------
+
+@given(st.text(min_size=1), st.text(min_size=1), st.text(min_size=1), st.text(min_size=1))
+@h_settings(max_examples=50)
+def test_deadletter_job_property_alias_roundtrip_idempotent(
+    jid: str, pi_id: str, exec_id: str, pd_id: str
+) -> None:
+    payload = {
+        "id": jid,
+        "processInstanceId": pi_id,
+        "executionId": exec_id,
+        "processDefinitionId": pd_id,
+    }
+    dlj = DeadLetterJob.model_validate(payload)
+    dumped = dlj.model_dump(by_alias=True)
+    dlj2 = DeadLetterJob.model_validate(dumped)
+    assert dlj == dlj2
+
+
+# ---------------------------------------------------------------------------
+# TC-044 — HistoricProcessInstance alias roundtrip
+# ---------------------------------------------------------------------------
+
+@given(st.text(min_size=1), st.text(min_size=1), st.text(min_size=1))
+@h_settings(max_examples=50)
+def test_historic_process_instance_property_alias_roundtrip_idempotent(
+    hid: str, pd_id: str, pd_key: str
+) -> None:
+    payload = {
+        "id": hid,
+        "processDefinitionId": pd_id,
+        "processDefinitionKey": pd_key,
+    }
+    hpi = HistoricProcessInstance.model_validate(payload)
+    dumped = hpi.model_dump(by_alias=True)
+    hpi2 = HistoricProcessInstance.model_validate(dumped)
+    assert hpi == hpi2
+
+
+# ---------------------------------------------------------------------------
+# TC-046 — EventSubscription alias roundtrip
+# ---------------------------------------------------------------------------
+
+@given(st.text(min_size=1), st.text(min_size=1))
+@h_settings(max_examples=50)
+def test_event_subscription_property_alias_roundtrip_idempotent(
+    eid: str, etype: str
+) -> None:
+    payload = {"id": eid, "eventType": etype}
+    es = EventSubscription.model_validate(payload)
+    dumped = es.model_dump(by_alias=True)
+    es2 = EventSubscription.model_validate(dumped)
+    assert es == es2

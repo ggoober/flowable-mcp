@@ -16,8 +16,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from pathlib import Path
-
 import httpx
 import pytest
 
@@ -259,7 +257,7 @@ async def test_list_process_definitions_when_call_succeeds_then_logs_contain_no_
     haystack = "\n".join(haystack_parts)
 
     assert encoded_auth not in haystack, (
-        f"Encoded Basic-Auth blob leaked into log output (Invariant I7 violation)"
+        "Encoded Basic-Auth blob leaked into log output (Invariant I7 violation)"
     )
     # Word-boundary password check, only for passwords specific enough to be
     # unambiguous evidence of a leak (≥ 8 chars rules out 'test' / 'admin' etc.).
