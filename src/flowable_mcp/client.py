@@ -50,6 +50,15 @@ _PAGE_SIZE: int = 100
 _MAX_ITEMS: int = 10_000
 
 
+# Sentinel — distinguishes "no timeout override" from 0.0 or None.
+# Separate from _MISSING to avoid confusion with the list-parse sentinel.
+class _TimeoutMissing:
+    """Sentinel type for _call timeout parameter."""
+
+
+_TIMEOUT_MISSING = _TimeoutMissing()
+
+
 def _flowable_iso8601(dt: datetime) -> str:
     """Format datetime in Flowable-accepted ISO-8601: millisecond precision + 'Z' for UTC.
 
@@ -75,6 +84,8 @@ def _map_status(exc: httpx.HTTPStatusError) -> Exception:
         return FlowableValidationError(f"Validation error ({status}): {body}")
     if status == 404:
         return FlowableNotFoundError("Resource not found (404)")
+    if status == 410:
+        return FlowableNotFoundError("Resource not found or completed (410)")
     if status == 409:
         body = exc.response.text[:200]
         return FlowableConflictError(f"Conflict (409): {body}")
@@ -91,15 +102,22 @@ class FlowableClient:
     Args:
         http_retry: AsyncClient for idempotent requests (GET, HEAD); may have transport retries.
         http_no_retry: AsyncClient for non-idempotent requests (POST, DELETE); retries=0.
+        http_diagram: AsyncClient for diagram endpoints; retries=0 (AC-4.2, DD-7).
+            Falls back to http_no_retry when None (backward-compat).
+        diagram_timeout_s: per-request timeout for diagram PNG fetches (AC-S3-2).
     """
 
     def __init__(
         self,
         http_retry: httpx.AsyncClient,
         http_no_retry: httpx.AsyncClient,
+        http_diagram: httpx.AsyncClient | None = None,
+        diagram_timeout_s: float = 30.0,
     ) -> None:
         self._retry = http_retry
         self._no_retry = http_no_retry
+        self._diagram_no_retry = http_diagram if http_diagram is not None else http_no_retry
+        self._diagram_timeout_s = diagram_timeout_s
         # Extract base URL so _call can build absolute URLs regardless of whether the
         # AsyncClient was configured with base_url or not.
         self._base_url: str = str(http_retry.base_url).rstrip("/")
@@ -117,19 +135,38 @@ class FlowableClient:
         idempotent: bool,
         response_model: type[T] | None = None,
         expect_json: bool = True,
+        expect_bytes: bool = False,
+        expect_text: bool = False,
+        timeout: object = _TIMEOUT_MISSING,
+        _http: httpx.AsyncClient | None = None,
         **kwargs: Any,
     ) -> Any:
         """Single entry point for all HTTP calls (AC-N2).
 
         path must be slash-prefixed, e.g. "/runtime/process-instances".
-        Returns: model instance | raw dict/list | None.
+        Returns: model instance | raw dict/list | None | bytes | str.
         - 204 No Content → None.
         - expect_json=False → None (fire-and-forget actions).
+        - expect_bytes=True → (bytes, content_type: str) tuple (AC-S2-6).
+        - expect_text=True → decoded str (AC-S1-4).
         - response_model=None + expect_json=True → raw payload dict (list pagination).
         - response_model provided → model_validate(resp.json()).
+        - timeout=_TIMEOUT_MISSING → AsyncClient-level default used.
+        - timeout=None → TypeError (httpx None = infinite wait, I-1, AC-S3-2).
+        - _http: explicit AsyncClient override; bypasses idempotent selection (AC-4.2).
         """
-        client = self._retry if idempotent else self._no_retry
+        if timeout is None:
+            raise TypeError("timeout=None is forbidden; pass _TIMEOUT_MISSING for no override")
+        assert sum([expect_json, expect_bytes, expect_text]) <= 1, (
+            "_call: at most one of expect_json/expect_bytes/expect_text may be True (I-3, AC-EDGE-2)"
+        )
+
+        client = _http if _http is not None else (self._retry if idempotent else self._no_retry)
         url = f"{self._base_url}{path}"
+
+        if timeout is not _TIMEOUT_MISSING:
+            kwargs["timeout"] = timeout
+
         t0 = time.perf_counter()
         try:
             resp = await client.request(method, url, **kwargs)
@@ -157,6 +194,12 @@ class FlowableClient:
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
             raise _map_status(exc) from exc
+
+        if expect_bytes:
+            return (resp.content, resp.headers.get("content-type", ""))
+
+        if expect_text:
+            return resp.content.decode(resp.encoding or "utf-8")
 
         if not expect_json:
             return None
@@ -752,6 +795,94 @@ class FlowableClient:
         )
 
     # ------------------------------------------------------------------
+    # TASK-005: Diagram / Source endpoints
+    # ------------------------------------------------------------------
+
+    async def get_definition_resource(
+        self,
+        definition_type: Literal["process", "case"],
+        definition_id: str,
+    ) -> str:
+        """GET /repository/{type}-definitions/{id}/resourcedata → raw text.
+
+        No .strip() here — whitespace handling is at tool level (AC-4.5, I-15).
+        idempotent=True is semantically correct (GET); functionally ignored because
+        _http override takes precedence over idempotent-based client selection (AC-4.2).
+        """
+        path = f"/repository/{definition_type}-definitions/{definition_id}/resourcedata"
+        result = await self._call(
+            "GET",
+            path,
+            idempotent=True,
+            expect_json=False,
+            expect_text=True,
+            _http=self._diagram_no_retry,
+        )
+        return result  # type: ignore[return-value]
+
+    async def get_definition_model(
+        self,
+        definition_type: Literal["process", "case"],
+        definition_id: str,
+    ) -> dict[str, Any]:
+        """GET /repository/{type}-definitions/{id}/model → raw dict.
+
+        idempotent=True is semantically correct (GET); functionally ignored because
+        _http override takes precedence over idempotent-based client selection (AC-4.2).
+        """
+        path = f"/repository/{definition_type}-definitions/{definition_id}/model"
+        result = await self._call(
+            "GET",
+            path,
+            idempotent=True,
+            expect_json=True,
+            _http=self._diagram_no_retry,
+        )
+        return result  # type: ignore[return-value]
+
+    async def get_definition_diagram(
+        self,
+        definition_type: Literal["process", "case"],
+        definition_id: str,
+    ) -> tuple[bytes, str]:
+        """GET /repository/{type}-definitions/{id}/image → (raw PNG bytes, content-type).
+
+        Validation happens in the tool layer (DD-6, AC-4.1).
+        """
+        path = f"/repository/{definition_type}-definitions/{definition_id}/image"
+        result = await self._call(
+            "GET",
+            path,
+            idempotent=True,
+            expect_json=False,
+            expect_bytes=True,
+            timeout=self._diagram_timeout_s,
+            _http=self._diagram_no_retry,
+        )
+        return result  # type: ignore[return-value]
+
+    async def get_instance_diagram(
+        self,
+        instance_type: Literal["process", "case"],
+        instance_id: str,
+    ) -> tuple[bytes, str]:
+        """GET /runtime/{type}-instances/{id}/diagram → (raw PNG bytes, content-type).
+
+        410 Gone → FlowableNotFoundError (AC-S3-4, I-10).
+        """
+        path = f"/runtime/{instance_type}-instances/{instance_id}/diagram"
+        result = await self._call(
+            "GET",
+            path,
+            idempotent=True,
+            expect_json=False,
+            expect_bytes=True,
+            timeout=self._diagram_timeout_s,
+            _http=self._diagram_no_retry,
+        )
+        return result  # type: ignore[return-value]
+
+    # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
@@ -762,3 +893,5 @@ class FlowableClient:
             await self._retry.aclose()
             if self._no_retry is not self._retry:
                 await self._no_retry.aclose()
+            if self._diagram_no_retry is not self._no_retry and self._diagram_no_retry is not self._retry:
+                await self._diagram_no_retry.aclose()
