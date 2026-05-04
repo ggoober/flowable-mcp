@@ -71,8 +71,8 @@ async def test_tool_list_event_subscriptions_when_key_filter_le_100_then_filtere
         await http.aclose()
 
 
-# TC-090: len(subs) > 100 → in-tool filter NOT applied, all 101 returned
-async def test_tool_list_event_subscriptions_when_subs_gt_100_then_no_filter_applied(
+# TC-090 (updated): len(subs) > 100 → client-side filter IS applied via _paginate (AC-4 fix)
+async def test_tool_list_event_subscriptions_when_subs_gt_100_then_filter_applied(
     unit_settings: Settings, respx_mock
 ) -> None:
     tools, http = _make_debug_tools(unit_settings)
@@ -88,7 +88,12 @@ async def test_tool_list_event_subscriptions_when_subs_gt_100_then_no_filter_app
     )
     try:
         result = await tools["list_event_subscriptions"](process_definition_key="my-proc")
-        assert len(result) == 101
+        # Now filter is unconditional (AC-4): only 100 my-proc items pass, other-proc excluded
+        assert len(result) == 100
+        assert all(
+            s.process_definition_id is not None and s.process_definition_id.startswith("my-proc:")
+            for s in result
+        )
     finally:
         await http.aclose()
 

@@ -1,4 +1,4 @@
-"""Historic process instance DTO."""
+"""Historic process and activity instance DTOs."""
 
 from __future__ import annotations
 
@@ -52,4 +52,32 @@ class HistoricTaskInstance(BaseModel):
     @field_validator("assignee", mode="before")
     @classmethod
     def _empty_to_none(cls, v: object) -> object:
+        return None if v == "" else v
+
+
+class HistoricActivityInstance(BaseModel):
+    """DTO for a Flowable historic activity instance."""
+
+    model_config = ConfigDict(frozen=True, populate_by_name=True, extra="ignore")
+
+    id: str
+    activity_id: str = Field(alias="activityId")
+    activity_type: str = Field(alias="activityType")
+    activity_name: str | None = Field(default=None, alias="activityName")
+    process_instance_id: str | None = Field(default=None, alias="processInstanceId")
+    process_definition_id: str | None = Field(default=None, alias="processDefinitionId")
+    execution_id: str | None = Field(default=None, alias="executionId")
+    task_id: str | None = Field(default=None, alias="taskId")
+    assignee: str | None = Field(default=None)
+    start_time: datetime | None = Field(default=None, alias="startTime")
+    end_time: datetime | None = Field(default=None, alias="endTime")
+    duration_in_millis: int | None = Field(default=None, alias="durationInMillis")
+    tenant_id: str | None = Field(default=None, alias="tenantId")
+    called_process_instance_id: str | None = Field(
+        default=None, alias="calledProcessInstanceId"
+    )
+
+    @field_validator("assignee", mode="before")
+    @classmethod
+    def _empty_assignee_to_none(cls, v: object) -> object:
         return None if v == "" else v

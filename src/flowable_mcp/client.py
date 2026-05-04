@@ -31,6 +31,7 @@ from flowable_mcp.models import (
     DeadLetterJob,
     Deployment,
     EventSubscription,
+    HistoricActivityInstance,
     HistoricProcessInstance,
     HistoricTaskInstance,
     ProcessDefinition,
@@ -234,6 +235,52 @@ class FlowableClient:
         if isinstance(total_raw, int):
             return total_raw
         return len(data) if isinstance(data, list) else 0
+
+    async def _paginate(
+        self,
+        method: str,
+        path: str,
+        model: type[T],
+        *,
+        params: dict[str, str],
+        max_items: int = _MAX_ITEMS,
+        page_size: int = _PAGE_SIZE,
+    ) -> tuple[list[T], bool]:
+        """Fetch all pages from a Flowable list endpoint.
+
+        Returns (items, truncated). truncated=True iff len(items) reached max_items
+        before all server items were fetched. Any FlowableError re-raises immediately
+        — no partial result is returned. [AC-2, AC-3]
+        """
+        items: list[T] = []
+        start = 0
+        while True:
+            remaining = max_items - len(items)
+            if remaining <= 0:
+                _logger.warning(
+                    "_paginate hit max_items cap",
+                    extra={"max_items": max_items},
+                )
+                return items[:max_items], True
+            size = min(page_size, remaining)
+            page_params = {**params, "start": str(start), "size": str(size)}
+            try:
+                raw = await self._call(method, path, idempotent=True, params=page_params)
+            except asyncio.CancelledError:
+                raise  # I-02.2: CancelledError must never be swallowed
+            # Any FlowableError propagates here without partial result — I-02.1
+            page = self._parse_list(raw, model)
+            items.extend(page[:remaining])
+            total = self._parse_total(raw)
+            if not page or len(items) >= total:
+                return items, False
+            if len(items) >= max_items:
+                _logger.warning(
+                    "_paginate hit max_items cap",
+                    extra={"max_items": max_items, "total": total},
+                )
+                return items[:max_items], True
+            start = len(items)
 
     # ------------------------------------------------------------------
     # Public API — existing (TASK-001)
@@ -479,10 +526,10 @@ class FlowableClient:
         if process_definition_key:
             params["processDefinitionKey"] = process_definition_key
 
-        raw = await self._call(
-            "GET", "/runtime/event-subscriptions", idempotent=True, params=params
+        items, _ = await self._paginate(
+            "GET", "/runtime/event-subscriptions", EventSubscription, params=params
         )
-        return self._parse_list(raw, EventSubscription)
+        return items
 
     # ------------------------------------------------------------------
     # TASK-003: Monitoring/Debug wave 2
@@ -648,6 +695,60 @@ class FlowableClient:
             idempotent=False,
             expect_json=False,
             params=params,
+        )
+
+    # ------------------------------------------------------------------
+    # TASK-004: v0.3 Monitoring/Debug wave 3
+    # ------------------------------------------------------------------
+
+    async def list_historic_activity_instances(
+        self,
+        *,
+        process_instance_id: str | None = None,
+        process_definition_id: str | None = None,
+        activity_type: str | None = None,
+        activity_id: str | None = None,
+        finished: bool | None = None,
+        started_after: datetime | None = None,
+        started_before: datetime | None = None,
+        max_results: int = 1000,
+    ) -> list[HistoricActivityInstance]:
+        """GET /history/historic-activity-instances via _paginate (DD-1, AC-4)."""
+        params: dict[str, str] = {}
+        if activity_type is not None:
+            params["activityType"] = activity_type
+        if process_instance_id is not None:
+            params["processInstanceId"] = process_instance_id
+        if process_definition_id is not None:
+            params["processDefinitionId"] = process_definition_id
+        if activity_id is not None:
+            params["activityId"] = activity_id
+        if finished is not None:
+            params["finished"] = str(finished).lower()
+        # Flowable 8.0.0 silently ignores startedBefore/startedAfter on both
+        # GET and POST /query for historic-activity-instances — filter client-side.
+        items, _ = await self._paginate(
+            "GET",
+            "/history/historic-activity-instances",
+            HistoricActivityInstance,
+            params=params,
+            max_items=max_results,
+        )
+        if started_after is not None:
+            items = [r for r in items if r.start_time is not None and r.start_time > started_after]
+        if started_before is not None:
+            items = [r for r in items if r.start_time is not None and r.start_time < started_before]
+        return items
+
+    async def set_task_due_date(self, task_id: str, due_date: datetime) -> None:
+        """PUT /runtime/tasks/{id} with minimal body {"dueDate": iso}. [AC-5]"""
+        body = {"dueDate": _flowable_iso8601(due_date)}
+        await self._call(
+            "PUT",
+            f"/runtime/tasks/{task_id}",
+            idempotent=False,
+            expect_json=False,
+            json=body,
         )
 
     # ------------------------------------------------------------------
