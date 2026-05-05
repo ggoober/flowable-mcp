@@ -25,6 +25,9 @@ services:
       SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
       SPRING_DATASOURCE_USERNAME: flowable
       SPRING_DATASOURCE_PASSWORD: flowable
+      # Enable CMMN + DMN engines (BPMN is on by default).
+      FLOWABLE_CMMN_ENABLED: "true"
+      FLOWABLE_DMN_ENABLED: "true"
       # Default rest-admin/test credentials kept — used by tests.
     healthcheck:
       test:

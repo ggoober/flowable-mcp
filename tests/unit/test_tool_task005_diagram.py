@@ -437,7 +437,7 @@ async def test_get_case_definition_model_tool_when_ok_then_returns_dict(
     tools = _make_diagram_tools(flowable_client, semaphore)
 
     model = {"caseElements": [], "name": "My Case", "sentries": []}
-    respx_mock.get(f"{_BASE}/repository/case-definitions/cd-1/model").mock(
+    respx_mock.get(f"{_BASE}/cmmn-api/cmmn-repository/case-definitions/cd-1/model").mock(
         return_value=httpx.Response(200, json=model)
     )
     result = await tools["get_case_definition_model"](case_definition_id="cd-1")
@@ -455,7 +455,7 @@ async def test_get_case_definition_diagram_tool_when_valid_png_then_returns_imag
     semaphore = asyncio.Semaphore(4)
     tools = _make_diagram_tools(flowable_client, semaphore)
 
-    respx_mock.get(f"{_BASE}/repository/case-definitions/cd-1/image").mock(
+    respx_mock.get(f"{_BASE}/cmmn-api/cmmn-repository/case-definitions/cd-1/image").mock(
         return_value=httpx.Response(200, content=VALID_PNG, headers={"content-type": "image/png"})
     )
     result = await tools["get_case_definition_diagram"](case_definition_id="cd-1")
@@ -473,7 +473,7 @@ async def test_get_case_instance_diagram_tool_when_valid_png_then_returns_image_
     semaphore = asyncio.Semaphore(4)
     tools = _make_diagram_tools(flowable_client, semaphore)
 
-    respx_mock.get(f"{_BASE}/runtime/case-instances/ci-1/diagram").mock(
+    respx_mock.get(f"{_BASE}/cmmn-api/cmmn-runtime/case-instances/ci-1/diagram").mock(
         return_value=httpx.Response(200, content=VALID_PNG, headers={"content-type": "image/png"})
     )
     result = await tools["get_case_instance_diagram"](case_instance_id="ci-1")
@@ -488,7 +488,7 @@ async def test_get_case_definition_xml_tool_when_whitespace_body_then_raises_pro
     semaphore = asyncio.Semaphore(4)
     tools = _make_diagram_tools(flowable_client, semaphore)
 
-    respx_mock.get(f"{_BASE}/repository/case-definitions/cd-ws/resourcedata").mock(
+    respx_mock.get(f"{_BASE}/cmmn-api/cmmn-repository/case-definitions/cd-ws/resourcedata").mock(
         return_value=httpx.Response(200, text="   \n\t  ")
     )
     with pytest.raises(FlowableProtocolError, match="empty resourcedata response"):
@@ -708,7 +708,7 @@ async def test_get_case_definition_diagram_tool_when_bad_content_type_then_raise
     semaphore = asyncio.Semaphore(4)
     tools = _make_diagram_tools(flowable_client, semaphore)
 
-    respx_mock.get(f"{_BASE}/repository/case-definitions/cd-bad/image").mock(
+    respx_mock.get(f"{_BASE}/cmmn-api/cmmn-repository/case-definitions/cd-bad/image").mock(
         return_value=httpx.Response(200, content=VALID_PNG, headers={"content-type": "text/html"})
     )
     with pytest.raises(FlowableDiagramError, match="unexpected content-type"):
@@ -722,7 +722,7 @@ async def test_get_case_instance_diagram_tool_when_empty_body_then_raises_diagra
     semaphore = asyncio.Semaphore(4)
     tools = _make_diagram_tools(flowable_client, semaphore)
 
-    respx_mock.get(f"{_BASE}/runtime/case-instances/ci-empty/diagram").mock(
+    respx_mock.get(f"{_BASE}/cmmn-api/cmmn-runtime/case-instances/ci-empty/diagram").mock(
         return_value=httpx.Response(200, content=b"", headers={"content-type": "image/png"})
     )
     with pytest.raises(FlowableDiagramError, match="empty body"):

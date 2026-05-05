@@ -7,32 +7,23 @@
   xmlns:flowable="http://flowable.org/bpmn"
   targetNamespace="http://www.flowable.org/processdef">
 
-  <process id="diagram-test" name="Diagram Test" isExecutable="true">
+  <process id="diagram-test-routing" name="Diagram Test Routing" isExecutable="true">
     <startEvent id="start" name="Start"/>
-    <sequenceFlow id="flow1" sourceRef="start" targetRef="wait"/>
-    <userTask id="wait" name="Wait"/>
-    <sequenceFlow id="flow2" sourceRef="wait" targetRef="end"/>
+    <sequenceFlow id="flow1" sourceRef="start" targetRef="end"/>
     <endEvent id="end" name="End"/>
   </process>
 
   <bpmndi:BPMNDiagram id="BPMNDiagram_1">
-    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="diagram-test">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="diagram-test-routing">
       <bpmndi:BPMNShape id="BPMNShape_start" bpmnElement="start">
         <omgdc:Bounds height="30" width="30" x="100" y="163"/>
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="BPMNShape_wait" bpmnElement="wait">
-        <omgdc:Bounds height="60" width="100" x="170" y="148"/>
-      </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="BPMNShape_end" bpmnElement="end">
-        <omgdc:Bounds height="28" width="28" x="320" y="164"/>
+        <omgdc:Bounds height="28" width="28" x="250" y="164"/>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNEdge id="BPMNEdge_flow1" bpmnElement="flow1">
         <omgdi:waypoint x="130" y="178"/>
-        <omgdi:waypoint x="170" y="178"/>
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="BPMNEdge_flow2" bpmnElement="flow2">
-        <omgdi:waypoint x="270" y="178"/>
-        <omgdi:waypoint x="320" y="178"/>
+        <omgdi:waypoint x="250" y="178"/>
       </bpmndi:BPMNEdge>
     </bpmndi:BPMNPlane>
   </bpmndi:BPMNDiagram>

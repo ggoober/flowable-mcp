@@ -121,6 +121,12 @@ class FlowableClient:
         # Extract base URL so _call can build absolute URLs regardless of whether the
         # AsyncClient was configured with base_url or not.
         self._base_url: str = str(http_retry.base_url).rstrip("/")
+        # CMMN endpoints in flowable-rest live under /cmmn-api (not /service).
+        # Derive the sibling root by swapping the trailing /service segment.
+        if self._base_url.endswith("/service"):
+            self._cmmn_base_url: str = self._base_url[: -len("/service")] + "/cmmn-api"
+        else:
+            self._cmmn_base_url = self._base_url + "/cmmn-api"
         self._closed: bool = False
 
     # ------------------------------------------------------------------
@@ -162,7 +168,8 @@ class FlowableClient:
         )
 
         client = _http if _http is not None else (self._retry if idempotent else self._no_retry)
-        url = f"{self._base_url}{path}"
+        # Absolute URLs (used for CMMN /cmmn-api endpoints) bypass the BPMN base URL.
+        url = path if path.startswith(("http://", "https://")) else f"{self._base_url}{path}"
 
         if timeout is not _TIMEOUT_MISSING:
             kwargs["timeout"] = timeout
@@ -798,18 +805,43 @@ class FlowableClient:
     # TASK-005: Diagram / Source endpoints
     # ------------------------------------------------------------------
 
+    def _definition_resource_path(
+        self, definition_type: Literal["process", "case"], definition_id: str, suffix: str
+    ) -> str:
+        """Build the absolute URL for definition resource endpoints.
+
+        BPMN lives under /service/repository, CMMN under /cmmn-api/cmmn-repository.
+        """
+        if definition_type == "case":
+            return (
+                f"{self._cmmn_base_url}/cmmn-repository/case-definitions/"
+                f"{definition_id}/{suffix}"
+            )
+        return f"/repository/process-definitions/{definition_id}/{suffix}"
+
+    def _instance_diagram_path(
+        self, instance_type: Literal["process", "case"], instance_id: str
+    ) -> str:
+        """Build the absolute URL for instance diagram endpoints (BPMN vs CMMN)."""
+        if instance_type == "case":
+            return (
+                f"{self._cmmn_base_url}/cmmn-runtime/case-instances/"
+                f"{instance_id}/diagram"
+            )
+        return f"/runtime/process-instances/{instance_id}/diagram"
+
     async def get_definition_resource(
         self,
         definition_type: Literal["process", "case"],
         definition_id: str,
     ) -> str:
-        """GET /repository/{type}-definitions/{id}/resourcedata → raw text.
+        """GET {definition resource} → raw text.
 
+        BPMN: /repository/process-definitions/{id}/resourcedata.
+        CMMN: /cmmn-api/cmmn-repository/case-definitions/{id}/resourcedata.
         No .strip() here — whitespace handling is at tool level (AC-4.5, I-15).
-        idempotent=True is semantically correct (GET); functionally ignored because
-        _http override takes precedence over idempotent-based client selection (AC-4.2).
         """
-        path = f"/repository/{definition_type}-definitions/{definition_id}/resourcedata"
+        path = self._definition_resource_path(definition_type, definition_id, "resourcedata")
         result = await self._call(
             "GET",
             path,
@@ -825,12 +857,8 @@ class FlowableClient:
         definition_type: Literal["process", "case"],
         definition_id: str,
     ) -> dict[str, Any]:
-        """GET /repository/{type}-definitions/{id}/model → raw dict.
-
-        idempotent=True is semantically correct (GET); functionally ignored because
-        _http override takes precedence over idempotent-based client selection (AC-4.2).
-        """
-        path = f"/repository/{definition_type}-definitions/{definition_id}/model"
+        """GET {definition model} → raw dict (BPMN /repository or CMMN /cmmn-api)."""
+        path = self._definition_resource_path(definition_type, definition_id, "model")
         result = await self._call(
             "GET",
             path,
@@ -845,11 +873,11 @@ class FlowableClient:
         definition_type: Literal["process", "case"],
         definition_id: str,
     ) -> tuple[bytes, str]:
-        """GET /repository/{type}-definitions/{id}/image → (raw PNG bytes, content-type).
+        """GET {definition image} → (raw PNG bytes, content-type).
 
         Validation happens in the tool layer (DD-6, AC-4.1).
         """
-        path = f"/repository/{definition_type}-definitions/{definition_id}/image"
+        path = self._definition_resource_path(definition_type, definition_id, "image")
         result = await self._call(
             "GET",
             path,
@@ -866,11 +894,13 @@ class FlowableClient:
         instance_type: Literal["process", "case"],
         instance_id: str,
     ) -> tuple[bytes, str]:
-        """GET /runtime/{type}-instances/{id}/diagram → (raw PNG bytes, content-type).
+        """GET {instance diagram} → (raw PNG bytes, content-type).
 
+        BPMN: /runtime/process-instances/{id}/diagram.
+        CMMN: /cmmn-api/cmmn-runtime/case-instances/{id}/diagram.
         410 Gone → FlowableNotFoundError (AC-S3-4, I-10).
         """
-        path = f"/runtime/{instance_type}-instances/{instance_id}/diagram"
+        path = self._instance_diagram_path(instance_type, instance_id)
         result = await self._call(
             "GET",
             path,

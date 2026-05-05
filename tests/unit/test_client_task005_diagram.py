@@ -265,7 +265,7 @@ async def test_get_case_definition_xml_when_cmmn_ok_then_returns_xml_str(
     flowable_client: FlowableClient, respx_mock
 ) -> None:
     cmmn = "<cmmn:definitions xmlns:cmmn='http://www.omg.org/spec/CMMN/20151109/MODEL'/>"
-    respx_mock.get(f"{_BASE}/repository/case-definitions/cd-1/resourcedata").mock(
+    respx_mock.get(f"{_BASE}/cmmn-api/cmmn-repository/case-definitions/cd-1/resourcedata").mock(
         return_value=httpx.Response(200, text=cmmn)
     )
     result = await flowable_client.get_definition_resource("case", "cd-1")
@@ -312,7 +312,7 @@ async def test_get_instance_diagram_when_active_then_returns_png_with_timeout(
 async def test_get_instance_diagram_when_valid_png_then_returns_bytes_and_content_type(
     flowable_client: FlowableClient, respx_mock
 ) -> None:
-    respx_mock.get(f"{_BASE}/runtime/case-instances/ci-1/diagram").mock(
+    respx_mock.get(f"{_BASE}/cmmn-api/cmmn-runtime/case-instances/ci-1/diagram").mock(
         return_value=httpx.Response(200, content=VALID_PNG, headers={"content-type": "image/png"})
     )
     body, ct = await flowable_client.get_instance_diagram("case", "ci-1")

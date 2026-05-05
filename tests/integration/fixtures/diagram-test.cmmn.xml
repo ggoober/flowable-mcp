@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/CMMN/20151109/MODEL"
+             xmlns:cmmndi="http://www.omg.org/spec/CMMN/20151109/CMMNDI"
+             xmlns:dc="http://www.omg.org/spec/CMMN/20151109/DC"
+             xmlns:di="http://www.omg.org/spec/CMMN/20151109/DI"
+             xmlns:flowable="http://flowable.org/cmmn"
+             targetNamespace="http://flowable.org/cmmn">
+  <case id="diagram-test-case" name="Diagram Test Case">
+    <casePlanModel id="casePlanModel_1" name="Diagram Test Plan">
+      <planItem id="planItem_task1" definitionRef="humanTask_1"/>
+      <humanTask id="humanTask_1" name="Task 1"/>
+    </casePlanModel>
+  </case>
+  <cmmndi:CMMNDI>
+    <cmmndi:CMMNDiagram id="CMMNDiagram_1">
+      <cmmndi:CMMNShape id="CMMNShape_casePlanModel_1" cmmnElementRef="casePlanModel_1">
+        <dc:Bounds height="300" width="500" x="40" y="40"/>
+        <cmmndi:CMMNLabel/>
+      </cmmndi:CMMNShape>
+      <cmmndi:CMMNShape id="CMMNShape_planItem_task1" cmmnElementRef="planItem_task1">
+        <dc:Bounds height="60" width="100" x="120" y="120"/>
+        <cmmndi:CMMNLabel/>
+      </cmmndi:CMMNShape>
+    </cmmndi:CMMNDiagram>
+  </cmmndi:CMMNDI>
+</definitions>
