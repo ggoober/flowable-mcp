@@ -36,7 +36,15 @@ target-version = "py312"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "UP"]
+# BLE001: blanket "except Exception" — bans СТ-8 violations (TASK-006 DA #2/#8).
+select = ["E", "F", "UP", "BLE"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests legitimately use bare "except Exception" for best-effort fixture
+# teardown (Flowable restart between deploy and DELETE must not mask test
+# results). СТ-8 is enforced for production code in src/; for tests the
+# semantics differ (cleanup must not fail-loud).
+"tests/**" = ["BLE001"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -49,11 +57,12 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 timeout = 30
-addopts = ["-m", "not integration and not e2e"]
+addopts = ["-m", "not integration and not e2e", "--strict-markers"]
 markers = [
     "unit: pure unit test (no network, no Docker)",
     "integration: requires live flowable-rest:8.0.0 Docker container",
     "e2e: full MCP-client → server → Flowable end-to-end",
+    "diagram_e2e: subprocess-isolated diagram e2e tests (TASK-006); auto-applied by tests/e2e/conftest.py to test_*_diagram*.py — do not set manually",
     "slow: known slow test (>5 s)",
 ]
 testpaths = ["tests"]
