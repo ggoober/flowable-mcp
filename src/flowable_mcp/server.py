@@ -137,7 +137,7 @@ async def lifespan(app: FastMCP) -> AsyncGenerator[dict[str, Any], None]:
         for tool_name in list(EXPECTED_TOOLS):
             try:
                 mcp.local_provider.remove_tool(tool_name)
-            except Exception as exc:  # best-effort pre-registration cleanup (§0.1 RC-review-003)
+            except Exception as exc:  # noqa: BLE001  # best-effort pre-registration cleanup (§0.1 RC-review-003)
                 _logger.debug("remove_tool %s skipped: %r", tool_name, exc)
         for mod in (process, task, history, debug, admin):
             mod.register(mcp, client)
