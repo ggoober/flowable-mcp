@@ -10,10 +10,39 @@ from __future__ import annotations
 
 import pytest
 
+import httpx
+import pytest_asyncio
+
 from flowable_mcp.client import FlowableClient
+from flowable_mcp.config import Settings
 from flowable_mcp.models import EventSubscription
 
 pytestmark = [pytest.mark.integration]
+
+
+@pytest_asyncio.fixture
+async def message_event_subscription(
+    integration_settings: Settings,
+    integration_http: httpx.AsyncClient,
+    message_event_process: str,
+) -> str:
+    """Start a message-event-process instance so Flowable creates a real
+    runtime event subscription. Yields the subscription's event type and
+    deletes the instance on teardown."""
+    base = integration_settings.base_url
+    resp = await integration_http.post(
+        f"{base}/runtime/process-instances",
+        json={"processDefinitionKey": message_event_process},
+    )
+    resp.raise_for_status()
+    instance_id: str = resp.json()["id"]
+
+    yield "message"
+
+    try:
+        await integration_http.delete(f"{base}/runtime/process-instances/{instance_id}")
+    except Exception:
+        pass
 
 
 # TC-I-105: list_event_subscriptions returns EventSubscription DTOs (or empty list)
@@ -45,11 +74,16 @@ async def test_list_event_subscriptions_when_message_event_deployed_then_subscri
 @pytest.mark.integration
 async def test_list_event_subscriptions_when_event_type_filter_then_only_that_type(
     integration_client: FlowableClient,
+    message_event_subscription: str,
 ) -> None:
-    """AC-4: event_type filter restricts returned subscriptions to matching type."""
+    """AC-4: event_type filter restricts returned subscriptions to matching type.
+
+    Starts a real message-event process instance via fixture so Flowable
+    creates a runtime event subscription — guarantees ≥1 subscription exists,
+    eliminating the prior pytest.skip on empty environments.
+    """
     all_subs = await integration_client.list_event_subscriptions()
-    if not all_subs:
-        pytest.skip("No event subscriptions available in this environment")
+    assert all_subs, "fixture must guarantee ≥1 event subscription exists"
 
     filter_type = all_subs[0].event_type
     filtered = await integration_client.list_event_subscriptions(event_type=filter_type)

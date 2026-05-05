@@ -8,6 +8,7 @@ Responsibilities:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 from collections.abc import AsyncGenerator
@@ -19,7 +20,7 @@ from fastmcp import FastMCP
 
 from flowable_mcp.client import FlowableClient
 from flowable_mcp.config import Settings
-from flowable_mcp.tools import admin, debug, history, process, task
+from flowable_mcp.tools import admin, debug, diagram, history, process, task
 
 _logger = logging.getLogger(__name__)
 
@@ -49,6 +50,16 @@ EXPECTED_TOOLS: frozenset[str] = frozenset({
     "delete_deployment",
     "list_historic_activity_instances",
     "set_task_due_date",
+    # TASK-005: diagram tools (9)
+    "get_process_definition_xml",
+    "get_process_definition_model",
+    "get_process_definition_diagram",
+    "get_process_definition_source",
+    "get_case_definition_xml",
+    "get_case_definition_model",
+    "get_case_definition_diagram",
+    "get_process_instance_diagram",
+    "get_case_instance_diagram",
 })
 
 
@@ -97,19 +108,45 @@ async def lifespan(app: FastMCP) -> AsyncGenerator[dict[str, Any], None]:
                 timeout=settings.timeout_s,
             )
         )
-        client = FlowableClient(http_retry, http_no_retry)
+        # Separate AsyncClient for diagram endpoints: retries=0 prevents retry amplification
+        # when semaphore slot is held (AC-4.2, DD-7, RC-005-3).
+        http_diagram = await stack.enter_async_context(
+            httpx.AsyncClient(
+                base_url=settings.base_url + "/",
+                auth=httpx.BasicAuth(settings.username, settings.password.get_secret_value()),
+                transport=httpx.AsyncHTTPTransport(retries=0),
+                limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+                timeout=settings.diagram_timeout_s,
+            )
+        )
+        client = FlowableClient(
+            http_retry,
+            http_no_retry,
+            http_diagram=http_diagram,
+            diagram_timeout_s=settings.diagram_timeout_s,
+        )
         stack.push_async_callback(client.aclose)  # HC-5: ensure _closed=True on teardown
+
+        # Semaphore created in lifespan — not module-level — to avoid event loop binding
+        # on import (AC-4.3, AC-EDGE-4, I-12).
+        png_semaphore = asyncio.Semaphore(settings.diagram_max_concurrent)
 
         # Re-register tools on every lifespan: a fresh FlowableClient is captured
         # by closures inside register(), so previous-session closed clients are not
         # reused. Clear any registrations from a prior lifespan first.
         for tool_name in list(EXPECTED_TOOLS):
             try:
-                mcp.remove_tool(tool_name)
-            except Exception:
-                pass
+                mcp.local_provider.remove_tool(tool_name)
+            except Exception as exc:  # best-effort pre-registration cleanup (§0.1 RC-review-003)
+                _logger.debug("remove_tool %s skipped: %r", tool_name, exc)
         for mod in (process, task, history, debug, admin):
             mod.register(mcp, client)
+        diagram.register(
+            mcp,
+            client,
+            png_semaphore=png_semaphore,
+            max_png_bytes=settings.diagram_max_png_bytes,
+        )
 
         actual_tools = frozenset(t.name for t in await mcp._list_tools())
         assert actual_tools == EXPECTED_TOOLS, (

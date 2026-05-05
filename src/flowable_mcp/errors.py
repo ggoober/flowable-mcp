@@ -34,3 +34,10 @@ class FlowableValidationError(FlowableError):
 
 class FlowableConflictError(FlowableError):
     """409 Conflict — конфликт состояния (claim на уже claimed task, cancel на ended instance)."""
+
+
+class FlowableDiagramError(FlowableError):
+    """PNG validation failure: content-type / magic bytes / size / empty body.
+
+    No httpx/fastmcp imports — Domain чист (СТ-1, AC-C1).
+    """

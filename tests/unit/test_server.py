@@ -173,8 +173,8 @@ async def test_lifespan_when_exception_in_yield_then_http_clients_closed(monkeyp
             async with lifespan(MagicMock()) as _ctx:
                 raise RuntimeError("lifespan error")
 
-    # AsyncExitStack closes both http_retry and http_no_retry
-    assert close_count == 2
+    # AsyncExitStack closes http_retry, http_no_retry, and http_diagram (3 clients total)
+    assert close_count == 3
 
 
 # ---------------------------------------------------------------------------
@@ -233,8 +233,10 @@ async def test_client_list_when_401_then_log_record_has_latency_ms_before_error(
 # ---------------------------------------------------------------------------
 
 def test_expected_tools_when_all_modules_registered_then_names_match_frozenset():
+    import asyncio
+
     from flowable_mcp.server import EXPECTED_TOOLS
-    from flowable_mcp.tools import admin, debug, history, process, task
+    from flowable_mcp.tools import admin, debug, diagram, history, process, task
 
     class _ToolCapture:
         def __init__(self) -> None:
@@ -252,6 +254,15 @@ def test_expected_tools_when_all_modules_registered_then_names_match_frozenset()
 
     for mod in (process, task, history, debug, admin):
         mod.register(mcp_stub, client_stub)  # type: ignore[arg-type]
+
+    # diagram.register needs a semaphore — create a real one (no event loop required here)
+    semaphore = asyncio.Semaphore(4)
+    diagram.register(
+        mcp_stub,  # type: ignore[arg-type]
+        client_stub,
+        png_semaphore=semaphore,
+        max_png_bytes=5_242_880,
+    )
 
     assert mcp_stub.names == EXPECTED_TOOLS
 
